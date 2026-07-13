@@ -33,6 +33,14 @@ game
     game.setScoresListener((scores) => hud.setScores(scores, net.playerId))
     game.setItemListener((item) => hud.setHeldItem(item))
     game.setPointerLockListener((locked) => hud.setPointerLocked(locked))
+    game.setMatchClockListener((endsAt, winScore) => {
+      hud.setMatchClock(endsAt, winScore)
+    })
+    game.setMatchEndListener((info) => {
+      hud.showMatchEnd(info, net.playerId)
+      lobby.show()
+      lobby.flashMatchEnd(info.message)
+    })
     game.start()
   })
   .catch((err) => {

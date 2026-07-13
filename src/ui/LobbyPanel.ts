@@ -160,10 +160,14 @@ export class LobbyPanel {
       }
     })
     this.net.on('matchStart', () => {
-      this.statusEl.textContent = '对局开始！'
+      this.statusEl.textContent = '对局开始！先送到 20 张或 2 分钟比谁多'
       this.statusEl.dataset.kind = 'ok'
       this.hide()
       this.opts.onMatchStart()
+    })
+    this.net.on('matchEnd', (info) => {
+      this.show()
+      this.flashMatchEnd(info.message)
     })
     this.net.on('error', (_code, message) => {
       this.statusEl.textContent = `错误：${message}`
@@ -253,6 +257,12 @@ export class LobbyPanel {
     this.actionsLobby.hidden = true
     this.actionsRoom.hidden = false
     this.codeBlock.hidden = false
+  }
+
+  /** After a round ends — surface result text in lobby status. */
+  flashMatchEnd(message: string): void {
+    this.statusEl.textContent = message
+    this.statusEl.dataset.kind = 'ok'
   }
 
   private renderStatus(status: NetStatus, detail?: string): void {

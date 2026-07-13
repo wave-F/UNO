@@ -67,6 +67,99 @@ canvas {
   display: inline-block;
 }
 
+.hud-timer {
+  margin-top: 6px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.88);
+  border: 1px solid rgba(251, 191, 36, 0.55);
+  font-weight: 800;
+  font-size: 18px;
+  letter-spacing: 0.04em;
+  display: inline-block;
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-timer.urgent {
+  background: rgba(127, 29, 29, 0.9);
+  border-color: #f87171;
+  animation: pulse-urgent 0.7s ease-in-out infinite alternate;
+}
+
+@keyframes pulse-urgent {
+  from { opacity: 1; }
+  to { opacity: 0.75; }
+}
+
+.hud-goal {
+  margin-top: 4px;
+  font-size: 12px;
+  opacity: 0.9;
+}
+
+#match-result {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.55);
+  pointer-events: auto;
+}
+
+#match-result[hidden] {
+  display: none !important;
+}
+
+.match-result-card {
+  max-width: min(420px, 92vw);
+  padding: 28px 32px;
+  border-radius: 16px;
+  background: linear-gradient(160deg, #1e293b, #0f172a);
+  border: 2px solid rgba(251, 191, 36, 0.45);
+  color: #f8fafc;
+  text-align: center;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
+}
+
+.match-result.win .match-result-card {
+  border-color: #4ade80;
+}
+
+.match-result-card h2 {
+  margin: 0 0 12px;
+  font-size: 1.6rem;
+}
+
+.match-result-msg {
+  margin: 0 0 8px;
+  font-size: 1.05rem;
+  line-height: 1.5;
+}
+
+.match-result-hint {
+  margin: 0 0 18px;
+  font-size: 0.85rem;
+  opacity: 0.75;
+}
+
+.match-result-btn {
+  pointer-events: auto;
+  cursor: pointer;
+  border: none;
+  border-radius: 10px;
+  padding: 10px 22px;
+  font-weight: 700;
+  font-size: 15px;
+  background: #fbbf24;
+  color: #111;
+}
+
+.match-result-btn:hover {
+  filter: brightness(1.08);
+}
+
 .hud-scores {
   margin-top: 8px;
   padding: 6px 10px;

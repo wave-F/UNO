@@ -2,8 +2,8 @@
 
 import type { UnoCardData } from './uno/types.ts'
 
-/** Phase 5: server-side bots. */
-export const PROTOCOL_VERSION = 5
+/** Phase 6: match timer + win conditions. */
+export const PROTOCOL_VERSION = 6
 
 export const DEFAULT_WS_PORT = 8787
 export const MAX_PLAYERS = 4
@@ -137,6 +137,9 @@ export type ServerMessage =
       scores: ScoreEntry[]
       /** Everyone's backpack for remote avatar visuals (incl. self). */
       playerStacks: PlayerStackEntry[]
+      /** When phase=playing: round end epoch ms / win target. */
+      matchEndsAt?: number
+      winScore?: number
     }
   | {
       type: 'room_state'
@@ -151,6 +154,21 @@ export type ServerMessage =
       scores: ScoreEntry[]
       /** Explicit home assignment so clients do not rely on stale roster. */
       homes: { playerId: string; homeIndex: number }[]
+      /** Server epoch ms when the round ends. */
+      endsAt: number
+      /** First to this many home cards wins (see MATCH_WIN_SCORE). */
+      winScore: number
+      durationMs: number
+    }
+  | {
+      /** Round over — return to lobby. */
+      type: 'match_end'
+      reason: 'score' | 'timeout'
+      /** One or more winners (ties on timeout / same score). */
+      winners: ScoreEntry[]
+      scores: ScoreEntry[]
+      winScore: number
+      message: string
     }
   | {
       type: 'player_joined'

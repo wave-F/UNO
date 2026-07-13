@@ -302,6 +302,8 @@ export class GameSim {
 
     for (const [playerId, pose] of poses) {
       if (playerId === TRAINING_DUMMY_ID) continue
+      // Stunned: no pickup / deposit / steal until stun ends
+      if (this.isStunned(playerId)) continue
       this.tryInteract(playerId, pose.x, pose.z)
     }
 
@@ -424,6 +426,8 @@ export class GameSim {
   private tryInteract(playerId: string, x: number, z: number): void {
     const p = this.players.get(playerId)
     if (!p) return
+    // Belt-and-suspenders: never interact while stunned (pickup/deposit/steal)
+    if (this.isStunned(playerId)) return
 
     // Own home: unload backpack → home pile (ends this steal trip).
     const inOwnHome = isInsideHomeSlot(p.homeIndex, x, z)

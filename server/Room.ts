@@ -20,6 +20,10 @@ import {
   TRAINING_DUMMY_ID,
   TRAINING_DUMMY_Y,
 } from '../shared/config/dummy.ts'
+import {
+  MATCH_DURATION_MS,
+  MATCH_WIN_SCORE,
+} from '../shared/config/match.ts'
 import { BOT_HOME_STAND_Y, BotController } from './Bot.ts'
 import { GameSim, type GroundCard } from './GameSim.ts'
 
@@ -74,6 +78,9 @@ export class Room {
   private readonly game: GameSim
   private bots = new Map<string, BotController>()
   private botSerial = 0
+  /** Server epoch ms when current round ends (0 if not playing). */
+  private matchEndsAt = 0
+  private matchEnding = false
   /** Called when room has no seats left. */
   onEmpty: (() => void) | null = null
 
@@ -112,6 +119,7 @@ export class Room {
           score: info.score,
           cards: info.cards,
         })
+        this.checkScoreWin()
       },
       onHomeStolen: (info) => {
         this.broadcast({
@@ -340,6 +348,8 @@ export class Room {
       yourItem: playing && st ? st.item : null,
       scores: playing ? this.enrichScores(this.game.getScores()) : [],
       playerStacks: playing ? this.game.getAllStacks() : [],
+      matchEndsAt: playing ? this.matchEndsAt : undefined,
+      winScore: playing ? MATCH_WIN_SCORE : undefined,
     })
   }
 
@@ -373,6 +383,7 @@ export class Room {
     }
 
     this.phase = 'playing'
+    this.matchEnding = false
     this.game.resetMatch()
     const homes: { playerId: string; homeIndex: number }[] = []
     for (const s of this.seats.values()) {
@@ -389,14 +400,24 @@ export class Room {
       // lastPoseAt=0 → first client pose after start is not speed-clamped
       // (allows snap to correct home if client was still at default SW spawn)
       s.lastPoseAt = 0
+      s.ready = false
       homes.push({ playerId: s.id, homeIndex: s.homeIndex })
     }
     this.game.startMatch()
+    this.matchEndsAt = Date.now() + MATCH_DURATION_MS
     this.ensureTick()
 
     const ground = this.game.getGroundSnapshot().map(toWire)
     const scores = this.enrichScores(this.game.getScores())
-    this.broadcast({ type: 'match_start', groundCards: ground, scores, homes })
+    this.broadcast({
+      type: 'match_start',
+      groundCards: ground,
+      scores,
+      homes,
+      endsAt: this.matchEndsAt,
+      winScore: MATCH_WIN_SCORE,
+      durationMs: MATCH_DURATION_MS,
+    })
     this.broadcastRoomState()
 
     // Sync private empty stacks
@@ -413,6 +434,96 @@ export class Room {
     // After clients enter match: fill dummy backpack (broadcasts player_stack)
     this.game.refillTrainingDummy()
     return { ok: true }
+  }
+
+  /** Competitive scores only (exclude training dummy). */
+  private competitiveScores(): ScoreEntry[] {
+    return this.enrichScores(
+      this.game.getScores().filter((s) => s.id !== TRAINING_DUMMY_ID),
+    )
+  }
+
+  private checkScoreWin(): void {
+    if (this.phase !== 'playing' || this.matchEnding) return
+    const scores = this.competitiveScores()
+    const reached = scores.filter((s) => s.score >= MATCH_WIN_SCORE)
+    if (!reached.length) return
+    const best = Math.max(...reached.map((s) => s.score))
+    const winners = reached.filter((s) => s.score === best)
+    this.endMatch('score', winners, scores)
+  }
+
+  private checkTimeoutWin(): void {
+    if (this.phase !== 'playing' || this.matchEnding) return
+    if (!this.matchEndsAt || Date.now() < this.matchEndsAt) return
+    const scores = this.competitiveScores()
+    if (!scores.length) {
+      this.endMatch('timeout', [], scores)
+      return
+    }
+    const best = Math.max(...scores.map((s) => s.score))
+    const winners = scores.filter((s) => s.score === best)
+    this.endMatch('timeout', winners, scores)
+  }
+
+  private endMatch(
+    reason: 'score' | 'timeout',
+    winners: ScoreEntry[],
+    scores: ScoreEntry[],
+  ): void {
+    if (this.matchEnding || this.phase !== 'playing') return
+    this.matchEnding = true
+    this.phase = 'lobby'
+    this.matchEndsAt = 0
+
+    let message: string
+    if (reason === 'score') {
+      const names = winners.map((w) => w.name || w.id.slice(0, 6)).join('、')
+      message =
+        winners.length > 1
+          ? `率先送达 ${MATCH_WIN_SCORE} 张！并列：${names}`
+          : `${names} 率先送达 ${MATCH_WIN_SCORE} 张，获胜！`
+    } else {
+      const best = winners[0]?.score ?? 0
+      if (!winners.length) {
+        message = '时间到！无人得分'
+      } else if (winners.length > 1 && best === 0) {
+        message = '时间到！无人得分，平局'
+      } else if (winners.length > 1) {
+        const names = winners.map((w) => w.name || w.id.slice(0, 6)).join('、')
+        message = `时间到！${names} 并列第一（${best} 张）`
+      } else {
+        const n = winners[0]!.name || winners[0]!.id.slice(0, 6)
+        message = `时间到！${n} 收集最多（${best} 张），获胜！`
+      }
+    }
+
+    this.broadcast({
+      type: 'match_end',
+      reason,
+      winners,
+      scores,
+      winScore: MATCH_WIN_SCORE,
+      message,
+    })
+
+    // Reset sim; keep seats for next lobby round
+    this.game.resetMatch()
+    for (const s of this.seats.values()) {
+      s.ready = false
+      s.pose = null
+      s.lastPoseAt = 0
+    }
+    this.stopTick()
+    this.broadcastRoomState()
+    this.matchEnding = false
+  }
+
+  private stopTick(): void {
+    if (this.tickTimer) {
+      clearInterval(this.tickTimer)
+      this.tickTimer = null
+    }
   }
 
   handleAttack(seatId: string, yaw: number): void {
@@ -613,6 +724,9 @@ export class Room {
 
   private tick(): void {
     if (this.phase !== 'playing') return
+    this.checkTimeoutWin()
+    if (this.phase !== 'playing') return
+
     const now = Date.now()
     const dt = Math.min(0.25, (now - this.lastTickAt) / 1000)
     this.lastTickAt = now

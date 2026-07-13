@@ -70,6 +70,37 @@ export class Game {
     this.onItem = cb
   }
 
+  private onMatchClock: ((endsAt: number | null, winScore: number) => void) | null =
+    null
+
+  setMatchClockListener(
+    cb: (endsAt: number | null, winScore: number) => void,
+  ): void {
+    this.onMatchClock = cb
+  }
+
+  private onMatchEnd:
+    | ((info: {
+        reason: 'score' | 'timeout'
+        winners: { id: string; name?: string; score: number }[]
+        scores: { id: string; name?: string; score: number; stackCount: number }[]
+        winScore: number
+        message: string
+      }) => void)
+    | null = null
+
+  setMatchEndListener(
+    cb: (info: {
+      reason: 'score' | 'timeout'
+      winners: { id: string; name?: string; score: number }[]
+      scores: { id: string; name?: string; score: number; stackCount: number }[]
+      winScore: number
+      message: string
+    }) => void,
+  ): void {
+    this.onMatchEnd = cb
+  }
+
   private matchLive = false
 
   /** Wire LAN client (optional). Offline still works without this. */
@@ -98,8 +129,11 @@ export class Game {
             info.yourItem ?? null,
           )
           this.remotes.applyPlayerStacks(info.playerStacks ?? [])
+          this.onMatchClock?.(info.matchEndsAt ?? null, info.winScore ?? 20)
         } else {
           this.matchLive = false
+          this.removeTrainingDummy()
+          this.onMatchClock?.(null, 20)
           // Lobby: still stand at your corner
           this.teleportLocalToHome()
         }
@@ -108,8 +142,14 @@ export class Game {
         if (net.playerId) this.remotes.setLocalPlayerId(net.playerId)
         this.remotes.syncRoster(info.players)
         this.applyRosterHomes(info.players, net.playerId)
+        if (info.phase === 'lobby' && this.matchLive) {
+          // Match ended elsewhere / returned to lobby
+          this.matchLive = false
+          this.removeTrainingDummy()
+          this.onMatchClock?.(null, 20)
+        }
       }),
-      net.on('matchStart', (ground, scores, homes) => {
+      net.on('matchStart', (ground, scores, homes, meta) => {
         this.remotes.clearAllStacks()
         this.homeYard.clearAllPiles()
         // Authoritative homes from match_start (do not trust only lobby roster)
@@ -119,6 +159,20 @@ export class Game {
           this.applyRosterHomes(net.players, net.playerId)
         }
         this.beginMatch(ground, [], 0, scores, true, null)
+        this.onMatchClock?.(meta.endsAt, meta.winScore)
+      }),
+      net.on('matchEnd', (info) => {
+        this.matchLive = false
+        this.removeTrainingDummy()
+        this.remotes.clearAllStacks()
+        this.homeYard.clearAllPiles()
+        this.cardSystem.enterOnlineMode()
+        this.playerCtrl.player.setHeldStack([])
+        this.playerCtrl.player.setHeldItem(null)
+        this.onItem?.(null)
+        this.onMatchClock?.(null, info.winScore)
+        this.onScores?.(info.scores)
+        this.onMatchEnd?.(info)
       }),
       net.on('worldState', (_t, poses) => {
         if (!this.matchLive) return

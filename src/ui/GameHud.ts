@@ -4,6 +4,7 @@ import {
   type UnoCardData,
 } from '../game/uno/types'
 import { formatStackLine, type PickupFeedback } from '../systems/CardPickupSystem'
+import { MATCH_WIN_SCORE } from '../../shared/config/match'
 
 export class GameHud {
   private readonly root: HTMLDivElement
@@ -15,6 +16,12 @@ export class GameHud {
 
   private readonly scoresEl: HTMLDivElement
   private readonly itemEl: HTMLDivElement
+  private readonly timerEl: HTMLDivElement
+  private readonly goalEl: HTMLDivElement
+  private readonly resultEl: HTMLDivElement
+
+  private matchEndsAt: number | null = null
+  private timerRaf = 0
 
   constructor() {
     this.root = document.createElement('div')
@@ -22,7 +29,9 @@ export class GameHud {
 
     this.root.innerHTML = `
       <div class="hud-title"><strong>UNO Guys · 运牌回家</strong></div>
-      <div class="hud-help">锁定鼠标 · WASD · 捡<strong>眩晕棒到手</strong>（不进背包）左键挥击 · 数字牌运回<strong>自家</strong></div>
+      <div class="hud-help">锁定鼠标 · WASD · 捡<strong>狼牙棒</strong>左键挥击 · 数字牌运回<strong>自家</strong>计分</div>
+      <div class="hud-timer" id="hud-timer" hidden>剩余 2:00</div>
+      <div class="hud-goal" id="hud-goal" hidden>目标：先送达 ${MATCH_WIN_SCORE} 张</div>
 
       <div class="hud-lock" id="hud-lock">点击画面开始控制镜头</div>
       <div class="hud-home" id="hud-home">老家已送达：0 张</div>
@@ -38,6 +47,8 @@ export class GameHud {
     this.promptEl = this.root.querySelector('#hud-prompt')!
     this.homeEl = this.root.querySelector('#hud-home')!
     this.scoresEl = this.root.querySelector('#hud-scores')!
+    this.timerEl = this.root.querySelector('#hud-timer')!
+    this.goalEl = this.root.querySelector('#hud-goal')!
     this.itemEl = document.createElement('div')
     this.itemEl.className = 'hud-item'
     this.itemEl.hidden = true
@@ -45,6 +56,76 @@ export class GameHud {
     this.renderStack([])
     this.renderHome(0)
     this.renderItem(null)
+
+    this.resultEl = document.createElement('div')
+    this.resultEl.id = 'match-result'
+    this.resultEl.hidden = true
+    document.body.appendChild(this.resultEl)
+  }
+
+  /** Server endsAt epoch ms; null clears timer. */
+  setMatchClock(endsAt: number | null, winScore = MATCH_WIN_SCORE): void {
+    this.matchEndsAt = endsAt
+    if (endsAt == null) {
+      this.timerEl.hidden = true
+      this.goalEl.hidden = true
+      if (this.timerRaf) {
+        cancelAnimationFrame(this.timerRaf)
+        this.timerRaf = 0
+      }
+      return
+    }
+    this.goalEl.hidden = false
+    this.goalEl.textContent = `目标：先送达 ${winScore} 张 · 时间到比谁多`
+    this.timerEl.hidden = false
+    if (this.timerRaf) cancelAnimationFrame(this.timerRaf)
+    this.tickTimer()
+  }
+
+  showMatchEnd(info: {
+    reason: 'score' | 'timeout'
+    winners: { id: string; name?: string; score: number }[]
+    message: string
+    winScore: number
+  }, localId: string | null): void {
+    this.setMatchClock(null, info.winScore)
+    const youWin = info.winners.some((w) => w.id === localId)
+    this.resultEl.hidden = false
+    this.resultEl.className = youWin ? 'match-result win' : 'match-result'
+    const title =
+      info.reason === 'score' ? '🏁 率先达标！' : '⏱️ 时间到！'
+    this.resultEl.innerHTML = `
+      <div class="match-result-card">
+        <h2>${title}</h2>
+        <p class="match-result-msg">${escapeHtml(info.message)}</p>
+        <p class="match-result-hint">返回大厅，房主可再开一局</p>
+        <button type="button" class="match-result-btn" id="match-result-ok">知道了</button>
+      </div>
+    `
+    this.resultEl.querySelector('#match-result-ok')?.addEventListener('click', () => {
+      this.hideMatchEnd()
+    })
+    this.showPrompt(info.message, youWin ? 'ok' : 'bad')
+  }
+
+  hideMatchEnd(): void {
+    this.resultEl.hidden = true
+    this.resultEl.innerHTML = ''
+  }
+
+  private tickTimer = (): void => {
+    if (this.matchEndsAt == null) return
+    const left = Math.max(0, this.matchEndsAt - Date.now())
+    const sec = Math.ceil(left / 1000)
+    const m = Math.floor(sec / 60)
+    const s = sec % 60
+    this.timerEl.textContent = `剩余 ${m}:${s.toString().padStart(2, '0')}`
+    this.timerEl.classList.toggle('urgent', left < 30_000)
+    if (left > 0) {
+      this.timerRaf = requestAnimationFrame(this.tickTimer)
+    } else {
+      this.timerEl.textContent = '剩余 0:00'
+    }
   }
 
   setHeldItem(item: { kind?: string; rank?: string; color?: string | null } | null): void {
@@ -170,4 +251,12 @@ export class GameHud {
       this.promptTimer = null
     }
   }
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
 }

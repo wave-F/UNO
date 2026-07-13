@@ -35,6 +35,8 @@ export type NetClientEvents = {
     yourItem: UnoCardData | null
     scores: ScoreEntry[]
     playerStacks: { playerId: string; stack: UnoCardData[] }[]
+    matchEndsAt?: number
+    winScore?: number
   }) => void
   roomState: (info: {
     roomCode: string
@@ -46,7 +48,15 @@ export type NetClientEvents = {
     groundCards: GroundCardWire[],
     scores: ScoreEntry[],
     homes: { playerId: string; homeIndex: number }[],
+    meta: { endsAt: number; winScore: number; durationMs: number },
   ) => void
+  matchEnd: (info: {
+    reason: 'score' | 'timeout'
+    winners: ScoreEntry[]
+    scores: ScoreEntry[]
+    winScore: number
+    message: string
+  }) => void
   playerJoined: (player: PublicPlayer) => void
   playerLeft: (playerId: string, reason: string) => void
   playerReconnected: (playerId: string) => void
@@ -372,6 +382,8 @@ export class NetClient {
           yourItem: msg.yourItem ?? null,
           scores: msg.scores,
           playerStacks: msg.playerStacks ?? [],
+          matchEndsAt: msg.matchEndsAt,
+          winScore: msg.winScore,
         })
         this.emit('roomState', {
           roomCode: msg.roomCode,
@@ -402,8 +414,28 @@ export class NetClient {
         this._phase = 'playing'
         this.poseSeq = 0
         this.poseAcc = 0
-        this.emit('matchStart', msg.groundCards, msg.scores, msg.homes ?? [])
+        this.emit(
+          'matchStart',
+          msg.groundCards,
+          msg.scores,
+          msg.homes ?? [],
+          {
+            endsAt: msg.endsAt,
+            winScore: msg.winScore,
+            durationMs: msg.durationMs,
+          },
+        )
         this.emit('scores', msg.scores)
+        break
+      case 'match_end':
+        this._phase = 'lobby'
+        this.emit('matchEnd', {
+          reason: msg.reason,
+          winners: msg.winners,
+          scores: msg.scores,
+          winScore: msg.winScore,
+          message: msg.message,
+        })
         break
       case 'player_joined':
         this.emit('playerJoined', msg.player)
