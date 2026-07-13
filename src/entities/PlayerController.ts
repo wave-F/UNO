@@ -24,6 +24,29 @@ export class PlayerController {
     null
   /** Client-local stun end time (performance.now or Date). */
   private stunUntilMs = 0
+  /** Mace knock arc (body center XZ). */
+  private knock: {
+    t: number
+    duration: number
+    fromX: number
+    fromZ: number
+    toX: number
+    toZ: number
+    baseY: number
+  } | null = null
+  /** Slide tackle: dash then recover freeze. */
+  private slide: {
+    t: number
+    duration: number
+    recover: number
+    recoverLeft: number
+    fromX: number
+    fromZ: number
+    toX: number
+    toZ: number
+    baseY: number
+    phase: 'dash' | 'recover'
+  } | null = null
 
   constructor(
     physics: PhysicsWorld,
@@ -62,7 +85,55 @@ export class PlayerController {
   }
 
   isStunned(now = Date.now()): boolean {
-    return now < this.stunUntilMs
+    return (
+      now < this.stunUntilMs ||
+      this.knock !== null ||
+      this.slide !== null
+    )
+  }
+
+  /**
+   * Fly along knock arc (body center). Cards are handled separately via cards_spawned.
+   */
+  playKnockback(toX: number, toZ: number, durationMs: number): void {
+    const t = this.body.translation()
+    this.horizVel.set(0, 0, 0)
+    this.verticalVel = 0
+    this.slide = null
+    this.knock = {
+      t: 0,
+      duration: Math.max(0.2, durationMs / 1000),
+      fromX: t.x,
+      fromZ: t.z,
+      toX,
+      toZ,
+      baseY: t.y,
+    }
+  }
+
+  /** Lie flat and dash forward, then recover hardstun. */
+  playSlide(
+    toX: number,
+    toZ: number,
+    durationMs: number,
+    recoverMs: number,
+  ): void {
+    const t = this.body.translation()
+    this.horizVel.set(0, 0, 0)
+    this.verticalVel = 0
+    this.knock = null
+    this.slide = {
+      t: 0,
+      duration: Math.max(0.15, durationMs / 1000),
+      recover: Math.max(0.1, recoverMs / 1000),
+      recoverLeft: 0,
+      fromX: t.x,
+      fromZ: t.z,
+      toX,
+      toZ,
+      baseY: t.y,
+      phase: 'dash',
+    }
   }
 
   update(dt: number): void {
@@ -71,11 +142,84 @@ export class PlayerController {
       this.pendingTeleport = null
       this.verticalVel = 0
       this.horizVel.set(0, 0, 0)
+      this.knock = null
+      this.slide = null
       this.body.setTranslation({ x: p.x, y: p.y, z: p.z }, true)
       this.body.setNextKinematicTranslation({ x: p.x, y: p.y, z: p.z })
       this.player.mesh.rotation.y = p.yaw
       this.grounded = false
       this.syncMesh()
+      this.player.updateVisuals(dt)
+      return
+    }
+
+    // Slide tackle: flat dash then recover freeze
+    if (this.slide) {
+      if (this.slide.phase === 'dash') {
+        this.slide.t += dt
+        const u = Math.min(1, this.slide.t / this.slide.duration)
+        const ease = u // linear dash
+        const x = this.slide.fromX + (this.slide.toX - this.slide.fromX) * ease
+        const z = this.slide.fromZ + (this.slide.toZ - this.slide.fromZ) * ease
+        this.body.setTranslation({ x, y: this.slide.baseY, z }, true)
+        this.body.setNextKinematicTranslation({ x, y: this.slide.baseY, z })
+        // Diagonal lean on body only — slide range stays on ground plane
+        this.player.setBodyPitch(Math.PI / 2 * 0.35)
+        this.syncMesh()
+        if (u >= 1) {
+          this.slide.phase = 'recover'
+          this.slide.recoverLeft = this.slide.recover
+          this.player.setBodyPitch(Math.PI / 2 * 0.35)
+        }
+      } else {
+        this.slide.recoverLeft -= dt
+        this.horizVel.set(0, 0, 0)
+        this.body.setNextKinematicTranslation(this.body.translation())
+        this.player.setBodyPitch(Math.PI / 2 * 0.35)
+        this.syncMesh()
+        if (this.slide.recoverLeft <= 0) {
+          this.player.setBodyPitch(0, 0)
+          this.slide = null
+          if (!this.player.getHeldItem()) {
+            this.player.slideRange.setIdlePreview(true)
+          }
+        }
+      }
+      this.player.updateVisuals(dt)
+      return
+    }
+
+    // Knock arc first (overrides movement / freeze-in-place stun pose)
+    if (this.knock) {
+      this.knock.t += dt
+      const u = Math.min(1, this.knock.t / this.knock.duration)
+      const ease = 1 - (1 - u) * (1 - u)
+      const x = this.knock.fromX + (this.knock.toX - this.knock.fromX) * ease
+      const z = this.knock.fromZ + (this.knock.toZ - this.knock.fromZ) * ease
+      const arc = Math.sin(u * Math.PI) * 1.35
+      const y = this.knock.baseY + arc
+      this.body.setTranslation({ x, y, z }, true)
+      this.body.setNextKinematicTranslation({ x, y, z })
+      // Tumble body while flying (not root yaw node)
+      this.player.setBodyPitch(
+        Math.sin(u * Math.PI) * 0.85,
+        Math.sin(u * Math.PI * 2) * 0.45,
+      )
+      this.syncMesh()
+      if (u >= 1) {
+        this.body.setTranslation(
+          { x: this.knock.toX, y: this.knock.baseY, z: this.knock.toZ },
+          true,
+        )
+        this.body.setNextKinematicTranslation({
+          x: this.knock.toX,
+          y: this.knock.baseY,
+          z: this.knock.toZ,
+        })
+        this.player.setBodyPitch(0, 0)
+        this.knock = null
+        this.syncMesh()
+      }
       this.player.updateVisuals(dt)
       return
     }

@@ -107,6 +107,65 @@ export class RemotePlayerSystem {
     this.remotes.get(playerId)?.player.setStunnedUntil(untilMs, durationMs)
   }
 
+  playKnockback(
+    playerId: string,
+    knock: {
+      fromX: number
+      fromY: number
+      fromZ: number
+      toX: number
+      toY: number
+      toZ: number
+      durationMs: number
+    },
+  ): void {
+    if (playerId === this.localId) return
+    if (playerId === TRAINING_DUMMY_ID) return
+    this.remotes
+      .get(playerId)
+      ?.playKnockback(
+        knock.fromX,
+        knock.fromY,
+        knock.fromZ,
+        knock.toX,
+        knock.toZ,
+        knock.durationMs,
+      )
+  }
+
+  playSlide(
+    playerId: string,
+    info: {
+      fromX: number
+      fromY: number
+      fromZ: number
+      toX: number
+      toY: number
+      toZ: number
+      durationMs: number
+      recoverMs: number
+    },
+  ): void {
+    if (playerId === this.localId) return
+    if (playerId === TRAINING_DUMMY_ID) return
+    this.remotes
+      .get(playerId)
+      ?.playSlide(
+        info.fromX,
+        info.fromY,
+        info.fromZ,
+        info.toX,
+        info.toZ,
+        info.durationMs,
+        info.recoverMs,
+      )
+  }
+
+  flashSlideRange(playerId: string, dist: number): void {
+    if (playerId === this.localId) return
+    this.remotes.get(playerId)?.player.flashSlideRange(dist)
+  }
+
   update(dt: number): void {
     for (const r of this.remotes.values()) r.update(dt)
   }

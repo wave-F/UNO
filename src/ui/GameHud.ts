@@ -1,5 +1,6 @@
 import {
   UNO_COLOR_CSS,
+  SLIDE_COOLDOWN_MS,
   cardLabel,
   type UnoCardData,
 } from '../game/uno/types'
@@ -20,8 +21,15 @@ export class GameHud {
   private readonly goalEl: HTMLDivElement
   private readonly resultEl: HTMLDivElement
 
+  private readonly skillRoot: HTMLDivElement
+  private readonly skillCdMask: HTMLDivElement
+  private readonly skillCdText: HTMLDivElement
+  private slideCdUntil = 0
+  private skillRaf = 0
+
   private matchEndsAt: number | null = null
   private timerRaf = 0
+  private onDebugGive: ((kind: 'stun_bat' | 'skip_trap') => void) | null = null
 
   constructor() {
     this.root = document.createElement('div')
@@ -29,7 +37,7 @@ export class GameHud {
 
     this.root.innerHTML = `
       <div class="hud-title"><strong>UNO Guys · 运牌回家</strong></div>
-      <div class="hud-help">锁定鼠标 · WASD · 捡<strong>狼牙棒</strong>左键挥击 · 数字牌运回<strong>自家</strong>计分</div>
+      <div class="hud-help">锁定鼠标 · WASD · <strong>左键铲人</strong>（有道具则用道具）· 数字牌运回<strong>自家</strong></div>
       <div class="hud-timer" id="hud-timer" hidden>剩余 2:00</div>
       <div class="hud-goal" id="hud-goal" hidden>目标：先送达 ${MATCH_WIN_SCORE} 张</div>
 
@@ -61,6 +69,80 @@ export class GameHud {
     this.resultEl.id = 'match-result'
     this.resultEl.hidden = true
     document.body.appendChild(this.resultEl)
+
+    // Right-side debug strip (pointer-events so buttons work under pointer lock)
+    const debug = document.createElement('div')
+    debug.id = 'debug-panel'
+    debug.innerHTML = `
+      <div class="debug-title">测试</div>
+      <button type="button" id="dbg-mace" class="debug-btn">+ 狼牙棒</button>
+      <button type="button" id="dbg-skip" class="debug-btn">+ Skip</button>
+    `
+    document.body.appendChild(debug)
+    debug.querySelector('#dbg-mace')!.addEventListener('click', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      this.onDebugGive?.('stun_bat')
+    })
+    debug.querySelector('#dbg-skip')!.addEventListener('click', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      this.onDebugGive?.('skip_trap')
+    })
+
+    // Bottom-right slide skill icon + cooldown
+    this.skillRoot = document.createElement('div')
+    this.skillRoot.id = 'skill-slide'
+    this.skillRoot.innerHTML = `
+      <div class="skill-icon" title="铲球（左键 · 空手）">
+        <span class="skill-glyph">铲</span>
+        <div class="skill-cd-mask" id="skill-cd-mask"></div>
+        <div class="skill-cd-text" id="skill-cd-text" hidden></div>
+      </div>
+      <div class="skill-label">铲球 · 左键</div>
+    `
+    document.body.appendChild(this.skillRoot)
+    this.skillCdMask = this.skillRoot.querySelector('#skill-cd-mask')!
+    this.skillCdText = this.skillRoot.querySelector('#skill-cd-text')!
+  }
+
+  setDebugGiveListener(cb: (kind: 'stun_bat' | 'skip_trap') => void): void {
+    this.onDebugGive = cb
+  }
+
+  /** Start local slide cooldown UI (default 5s). */
+  startSlideCooldown(durationMs = SLIDE_COOLDOWN_MS): void {
+    this.slideCdUntil = performance.now() + durationMs
+    this.skillRoot.classList.add('on-cd')
+    if (this.skillRaf) cancelAnimationFrame(this.skillRaf)
+    this.tickSkillCd()
+  }
+
+  clearSlideCooldown(): void {
+    this.slideCdUntil = 0
+    this.skillRoot.classList.remove('on-cd')
+    this.skillCdMask.style.setProperty('--cd', '0')
+    this.skillCdText.hidden = true
+    if (this.skillRaf) {
+      cancelAnimationFrame(this.skillRaf)
+      this.skillRaf = 0
+    }
+  }
+
+  private tickSkillCd = (): void => {
+    const left = this.slideCdUntil - performance.now()
+    // Hide "0.0" — clear as soon as under 0.05s remaining
+    if (left <= 50) {
+      this.clearSlideCooldown()
+      return
+    }
+    const total = SLIDE_COOLDOWN_MS
+    const p = Math.min(1, left / total)
+    // --cd: remaining fraction (1 = full cover, 0 = ready)
+    this.skillCdMask.style.setProperty('--cd', String(p))
+    this.skillCdText.hidden = false
+    this.skillCdText.textContent = (left / 1000).toFixed(1)
+    this.skillRaf = requestAnimationFrame(this.tickSkillCd)
   }
 
   /** Server endsAt epoch ms; null clears timer. */
@@ -88,6 +170,7 @@ export class GameHud {
     message: string
     winScore: number
   }, localId: string | null): void {
+    this.clearSlideCooldown()
     this.setMatchClock(null, info.winScore)
     const youWin = info.winners.some((w) => w.id === localId)
     this.resultEl.hidden = false

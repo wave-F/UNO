@@ -23,6 +23,26 @@ export class RemotePlayer {
   /** Interpolation delay (ms) — show others slightly in the past. */
   private readonly interpDelayMs = 100
   private readonly halfTotal = cfg.capsuleHalfHeight + cfg.capsuleRadius
+  private knock: {
+    t: number
+    duration: number
+    fromX: number
+    fromZ: number
+    toX: number
+    toZ: number
+    baseY: number
+  } | null = null
+  private slide: {
+    t: number
+    duration: number
+    recoverLeft: number
+    fromX: number
+    fromZ: number
+    toX: number
+    toZ: number
+    baseY: number
+    phase: 'dash' | 'recover'
+  } | null = null
 
   constructor(id: string, name: string, colorIndex = 0) {
     this.id = id
@@ -37,14 +57,130 @@ export class RemotePlayer {
   }
 
   pushPose(x: number, y: number, z: number, yaw: number): void {
+    // During knock/slide, ignore pose spam so anim is not overwritten
+    if (this.knock || this.slide) return
     const snap: Snapshot = { recvAt: performance.now(), x, y, z, yaw }
     this.snaps.push(snap)
     // Keep a short buffer
     while (this.snaps.length > 12) this.snaps.shift()
   }
 
+  playKnockback(
+    fromX: number,
+    fromY: number,
+    fromZ: number,
+    toX: number,
+    toZ: number,
+    durationMs: number,
+  ): void {
+    this.slide = null
+    this.knock = {
+      t: 0,
+      duration: Math.max(0.2, durationMs / 1000),
+      fromX,
+      fromZ,
+      toX,
+      toZ,
+      baseY: fromY,
+    }
+    this.snaps = []
+  }
+
+  playSlide(
+    fromX: number,
+    fromY: number,
+    fromZ: number,
+    toX: number,
+    toZ: number,
+    durationMs: number,
+    recoverMs: number,
+  ): void {
+    this.knock = null
+    this.slide = {
+      t: 0,
+      duration: Math.max(0.15, durationMs / 1000),
+      recoverLeft: Math.max(0.1, recoverMs / 1000),
+      fromX,
+      fromZ,
+      toX,
+      toZ,
+      baseY: fromY,
+      phase: 'dash',
+    }
+    this.snaps = []
+  }
+
   update(dt: number): void {
     this.player.updateVisuals(dt)
+
+    if (this.slide) {
+      if (this.slide.phase === 'dash') {
+        this.slide.t += dt
+        const u = Math.min(1, this.slide.t / this.slide.duration)
+        const x = this.slide.fromX + (this.slide.toX - this.slide.fromX) * u
+        const z = this.slide.fromZ + (this.slide.toZ - this.slide.fromZ) * u
+        this.apply(x, this.slide.baseY, z, this.player.mesh.rotation.y)
+        this.player.setBodyPitch(Math.PI / 2 * 0.35)
+        if (u >= 1) {
+          this.slide.phase = 'recover'
+          this.player.setBodyPitch(Math.PI / 2 * 0.35)
+        }
+      } else {
+        this.slide.recoverLeft -= dt
+        this.apply(
+          this.slide.toX,
+          this.slide.baseY,
+          this.slide.toZ,
+          this.player.mesh.rotation.y,
+        )
+        this.player.setBodyPitch(Math.PI / 2 * 0.35)
+        if (this.slide.recoverLeft <= 0) {
+          this.player.setBodyPitch(0, 0)
+          this.snaps = [
+            {
+              recvAt: performance.now(),
+              x: this.slide.toX,
+              y: this.slide.baseY,
+              z: this.slide.toZ,
+              yaw: this.player.mesh.rotation.y,
+            },
+          ]
+          this.slide = null
+        }
+      }
+      return
+    }
+
+    if (this.knock) {
+      this.knock.t += dt
+      const u = Math.min(1, this.knock.t / this.knock.duration)
+      const ease = 1 - (1 - u) * (1 - u)
+      const x = this.knock.fromX + (this.knock.toX - this.knock.fromX) * ease
+      const z = this.knock.fromZ + (this.knock.toZ - this.knock.fromZ) * ease
+      const arc = Math.sin(u * Math.PI) * 1.35
+      const y = this.knock.baseY + arc
+      this.apply(x, y, z, this.player.mesh.rotation.y)
+      this.player.setBodyPitch(
+        Math.sin(u * Math.PI) * 0.85,
+        Math.sin(u * Math.PI * 2) * 0.45,
+      )
+      if (u >= 1) {
+        this.apply(this.knock.toX, this.knock.baseY, this.knock.toZ, this.player.mesh.rotation.y)
+        this.player.setBodyPitch(0, 0)
+        this.snaps = [
+          {
+            recvAt: performance.now(),
+            x: this.knock.toX,
+            y: this.knock.baseY,
+            z: this.knock.toZ,
+            yaw: this.player.mesh.rotation.y,
+          },
+        ]
+        this.knock = null
+      }
+      return
+    }
+
     if (this.snaps.length === 0) return
 
     const renderAt = performance.now() - this.interpDelayMs

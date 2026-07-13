@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { movementConfig } from '../config/movement'
 import { HeadCardDisplay } from './HeadCardDisplay'
 import { AttackRangeVisual } from './AttackRangeVisual'
+import { SlideRangeVisual } from './SlideRangeVisual'
 import { StunFx } from './StunFx'
 import {
   createCardMesh,
@@ -22,6 +23,8 @@ export type PlayerVisualOptions = {
  */
 export class Player {
   readonly mesh: THREE.Group
+  /** Visual lean / tumble only — does not affect ground hit indicators. */
+  private readonly bodyRoot: THREE.Group
   readonly headCard: HeadCardDisplay
   private bodyMesh: THREE.Mesh
   private heldCount = 0
@@ -42,11 +45,17 @@ export class Player {
 
   private readonly totalHeight: number
   readonly attackRange: AttackRangeVisual
+  readonly slideRange: SlideRangeVisual
   private readonly stunFx: StunFx
 
   constructor(opts: PlayerVisualOptions = {}) {
     this.mesh = new THREE.Group()
     this.mesh.name = opts.name ? `Player:${opts.name}` : 'Player'
+
+    // bodyRoot: pitch/roll lean; mesh.rotation.y = facing only
+    this.bodyRoot = new THREE.Group()
+    this.bodyRoot.name = 'BodyRoot'
+    this.mesh.add(this.bodyRoot)
 
     const { capsuleRadius: r, capsuleHalfHeight: h } = movementConfig
     this.totalHeight = h * 2 + r * 2
@@ -60,7 +69,7 @@ export class Player {
     this.bodyMesh = new THREE.Mesh(bodyGeo, bodyMat)
     this.bodyMesh.castShadow = true
     this.bodyMesh.position.y = this.totalHeight / 2
-    this.mesh.add(this.bodyMesh)
+    this.bodyRoot.add(this.bodyMesh)
 
     const eyeGeo = new THREE.SphereGeometry(0.08, 8, 8)
     const eyeMat = new THREE.MeshStandardMaterial({ color: 0x1e1e2e })
@@ -68,17 +77,17 @@ export class Player {
     const eyeR = new THREE.Mesh(eyeGeo, eyeMat)
     eyeL.position.set(-0.14, this.totalHeight * 0.72, r * 0.75)
     eyeR.position.set(0.14, this.totalHeight * 0.72, r * 0.75)
-    this.mesh.add(eyeL, eyeR)
+    this.bodyRoot.add(eyeL, eyeR)
 
     const mouth = new THREE.Mesh(
       new THREE.BoxGeometry(0.2, 0.05, 0.05),
       new THREE.MeshStandardMaterial({ color: 0x7f1d1d }),
     )
     mouth.position.set(0, this.totalHeight * 0.55, r * 0.85)
-    this.mesh.add(mouth)
+    this.bodyRoot.add(mouth)
 
     this.headCard = new HeadCardDisplay()
-    this.mesh.add(this.headCard.root)
+    this.bodyRoot.add(this.headCard.root)
 
     // Right hand / hip grip — no arm mesh, just weapon
     this.handPivot = new THREE.Group()
@@ -86,14 +95,24 @@ export class Player {
     this.handPivot.position.set(r * 0.95, this.totalHeight * 0.48, 0.12)
     this.handPivot.rotation.x = this.handRestX
     this.handPivot.rotation.z = this.handRestZ
-    this.mesh.add(this.handPivot)
+    this.bodyRoot.add(this.handPivot)
     this.handPivot.visible = false
 
+    // Hit indicators stay on mesh (yaw only) so slide lean does not warp them
     this.attackRange = new AttackRangeVisual()
     this.mesh.add(this.attackRange.root)
 
+    this.slideRange = new SlideRangeVisual()
+    this.mesh.add(this.slideRange.root)
+
     this.stunFx = new StunFx(this.totalHeight)
-    this.mesh.add(this.stunFx.root)
+    this.bodyRoot.add(this.stunFx.root)
+  }
+
+  /** Slide lean / knock tumble — body only, ground FX stay level. */
+  setBodyPitch(pitch: number, roll = 0): void {
+    this.bodyRoot.rotation.x = pitch
+    this.bodyRoot.rotation.z = roll
   }
 
   /** Show stun stars (local clock via duration). */
@@ -108,6 +127,9 @@ export class Player {
   setHeldStack(stack: readonly UnoCardData[]): void {
     this.heldCount = stack.length
     this.headCard.setStack(stack)
+    this.slideRange.setStackCount(stack.length)
+    // Empty hand → show slide corridor preview
+    this.slideRange.setIdlePreview(!this.heldItem)
   }
 
   getHeldCount(): number {
@@ -126,9 +148,16 @@ export class Player {
     this.handPivot.visible = !!item || this.swingT >= 0
     // Melee cone only for mace; skip is place-at-feet
     this.attackRange.setHolding(!!item && isStunBat(item))
+    // Slide strip when empty-handed
+    this.slideRange.setIdlePreview(!item)
     if (!item && this.swingT < 0) {
       this.handPivot.rotation.set(this.handRestX, 0, this.handRestZ)
     }
+  }
+
+  /** Flash slide hit corridor (actual distance when known). */
+  flashSlideRange(dist?: number): void {
+    this.slideRange.flashSlide(dist)
   }
 
   getHeldItem(): UnoCardData | null {
@@ -147,6 +176,7 @@ export class Player {
     this.headCard.update(dt)
     this.stunFx.update(dt)
     this.attackRange.update(dt)
+    this.slideRange.update(dt)
     if (this.swingT >= 0) {
       this.swingT += dt
       const u = Math.min(1, this.swingT / this.swingDuration)

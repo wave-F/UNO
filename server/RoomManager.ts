@@ -107,10 +107,22 @@ export class RoomManager {
         ctx.room.handleAttack(ctx.seatId, yaw)
         break
       }
+      case 'slide': {
+        if (!ctx.room || !ctx.seatId) return
+        const yaw = typeof msg.yaw === 'number' && Number.isFinite(msg.yaw) ? msg.yaw : 0
+        ctx.room.handleSlide(ctx.seatId, yaw)
+        break
+      }
       case 'discard_item': {
         if (!ctx.room || !ctx.seatId) return
         const yaw = typeof msg.yaw === 'number' && Number.isFinite(msg.yaw) ? msg.yaw : 0
         ctx.room.handleDiscardItem(ctx.seatId, yaw)
+        break
+      }
+      case 'debug_give_item': {
+        if (!ctx.room || !ctx.seatId) return
+        const kind = msg.kind === 'skip_trap' ? 'skip_trap' : 'stun_bat'
+        ctx.room.handleDebugGiveItem(ctx.seatId, kind)
         break
       }
       default:

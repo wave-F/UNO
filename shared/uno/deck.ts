@@ -8,8 +8,8 @@ import {
 const COLORS: UnoColor[] = ['red', 'yellow', 'green', 'blue']
 const NUMBERS: UnoRank[] = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']
 
-/** Default field mix: mostly numbers; items are occasional. */
-export const DEFAULT_STUN_FRACTION = 0.08
+/** Default field mix: mace disabled for now; skip occasional. */
+export const DEFAULT_STUN_FRACTION = 0
 export const DEFAULT_SKIP_FRACTION = 0.08
 
 let idSeq = 0

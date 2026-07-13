@@ -1,26 +1,30 @@
 /**
- * Simple server-side AI: walk → pick legal field cards → deposit at home
- * → occasionally raid other homes (UNO rules).
- * Stun cards: free pickup into hand slot only; never treated as stack targets.
+ * Server-side AI: pick numbers / items → deposit → raid; use mace to chase & swing.
  */
 import { maxSpeedForCarry, BASE_MAX_SPEED } from '../shared/config/movement.ts'
+import { TRAINING_DUMMY_ID } from '../shared/config/dummy.ts'
 import { canStackOn, canPickupItem } from '../shared/uno/rules.ts'
-import { isHandItem, isStunBat, ATTACK_RANGE } from '../shared/uno/types.ts'
+import {
+  isHandItem,
+  isStunBat,
+  isSkipTrap,
+  ATTACK_RANGE,
+} from '../shared/uno/types.ts'
 import { getHomeSlot } from '../shared/config/home.ts'
 import type { GameSim } from './GameSim.ts'
 import type { Seat } from './Room.ts'
 
 const ARRIVE_EPS = 0.65
 const MAX_CARRY = 3
-/**
- * Body-center Y when standing on the arena floor.
- * Must match client capsule: halfHeight + radius (not spawn.y=2.2 which is fall-in height).
- */
+/** How far bots will chase a target while holding a mace. */
+const MACE_CHASE_RANGE = 11
+/** Start wind-up when this close (slightly inside attack range). */
+const MACE_ENGAGE = ATTACK_RANGE * 0.9
+
 export const BOT_STAND_Y = 0.35 + 0.4
-/** Body-center on home platform (platform top ≈ 0.25). */
 export const BOT_HOME_STAND_Y = 0.25 + BOT_STAND_Y
 
-type BotMode = 'seek_field' | 'go_home' | 'raid' | 'wander'
+type BotMode = 'seek_field' | 'go_home' | 'raid' | 'wander' | 'hunt'
 
 export class BotController {
   readonly seatId: string
@@ -29,12 +33,7 @@ export class BotController {
   private targetZ = 0
   private retargetT = 0
   private raidCooldown = 0
-  /** After a swing: must wait before considering another attack. */
   private attackCooldown = 0
-  /**
-   * Wind-up while a target is in range. -1 = not aiming.
-   * Counts down; only tryAttack when reaches 0.
-   */
   private attackWindup = -1
   private windupTargetId: string | null = null
 
@@ -42,10 +41,6 @@ export class BotController {
     this.seatId = seatId
   }
 
-  /**
-   * Advance bot pose on seat; interaction runs via Room game.tick poses.
-   * @param poseMap all connected player/bot positions (for melee).
-   */
   tick(
     dt: number,
     seat: Seat,
@@ -64,9 +59,9 @@ export class BotController {
     this.raidCooldown = Math.max(0, this.raidCooldown - dt)
     this.attackCooldown = Math.max(0, this.attackCooldown - dt)
 
-    if (this.retargetT > 0.35) {
+    if (this.retargetT > 0.28) {
       this.retargetT = 0
-      this.chooseTarget(seat, game, st.stack.length, st.homeIndex)
+      this.chooseTarget(seat, game, st.stack.length, st.homeIndex, poseMap)
     }
 
     const px = seat.pose.x
@@ -74,9 +69,8 @@ export class BotController {
     const dx = this.targetX - px
     const dz = this.targetZ - pz
     const dist = Math.hypot(dx, dz)
-    // Always pin Y to standing height (bots have no gravity/physics).
     const standY = standingYForBot(px, pz, st.homeIndex)
-    // Stunned: freeze in place
+
     if (game.isStunned(this.seatId)) {
       seat.pose = { ...seat.pose, y: standY }
       seat.lastPoseAt = Date.now()
@@ -102,20 +96,18 @@ export class BotController {
     }
     seat.lastPoseAt = Date.now()
 
-    // Update pose map with our new position, then maybe swing stun card
     poseMap.set(this.seatId, {
       x: seat.pose.x,
       y: seat.pose.y,
       z: seat.pose.z,
     })
-    this.tryUseStun(dt, seat, game, poseMap)
+    this.tryUseItem(dt, seat, game, poseMap)
   }
 
   /**
-   * Holding stun + enemy in range: face target, random wind-up, then swing.
-   * Not instant on the first frame they enter range.
+   * Use hand item: place skip near foes, or wind-up + swing mace at chase target.
    */
-  private tryUseStun(
+  private tryUseItem(
     dt: number,
     seat: Seat,
     game: GameSim,
@@ -133,33 +125,31 @@ export class BotController {
       return
     }
 
-    // Skip trap: place near opponents when any enemy is close enough to bait
-    if (st.item.kind === 'skip_trap' || st.item.rank === 'skip') {
+    // Skip: drop at feet when an enemy is nearby
+    if (isSkipTrap(st.item)) {
       let nearEnemy = false
       for (const [id, pos] of poseMap) {
-        if (id === this.seatId) continue
+        if (id === this.seatId || id === TRAINING_DUMMY_ID) continue
         if (game.isStunned(id)) continue
         const d = Math.hypot(pos.x - seat.pose.x, pos.z - seat.pose.z)
-        if (d > 0.3 && d < 3.2) {
+        if (d > 0.3 && d < 3.5) {
           nearEnemy = true
           break
         }
       }
       if (!nearEnemy) {
         this.attackWindup = -1
-        this.windupTargetId = null
         return
       }
       if (this.attackWindup < 0) {
-        this.attackWindup = 0.25 + Math.random() * 0.4
+        this.attackWindup = 0.2 + Math.random() * 0.35
         return
       }
       this.attackWindup -= dt
       if (this.attackWindup > 0) return
       game.tryAttack(this.seatId, seat.pose.yaw, poseMap)
       this.attackWindup = -1
-      this.windupTargetId = null
-      this.attackCooldown = 0.8 + Math.random() * 0.6
+      this.attackCooldown = 0.7 + Math.random() * 0.5
       return
     }
 
@@ -182,9 +172,12 @@ export class BotController {
       const dx = pos.x - px
       const dz = pos.z - pz
       const d = Math.hypot(dx, dz)
-      if (d < 0.2 || d > ATTACK_RANGE * 0.92) continue
+      if (d < 0.15 || d > ATTACK_RANGE * 1.05) continue
       const other = game.getPlayerState(id)
-      const weight = d - (other && other.stack.length > 0 ? 0.8 : 0)
+      // Prefer humans with cards; still hit dummy/bots
+      let weight = d
+      if (id === TRAINING_DUMMY_ID) weight += 0.4
+      if (other && other.stack.length > 0) weight -= 1.0
       if (weight < bestD) {
         bestD = weight
         bestId = id
@@ -204,20 +197,18 @@ export class BotController {
 
     if (this.windupTargetId !== bestId || this.attackWindup < 0) {
       this.windupTargetId = bestId
-      // Random reaction / aim time before swing
-      this.attackWindup = 0.5 + Math.random() * 1.0 // 0.5–1.5s
+      // Shorter wind-up so mace sees use in tests
+      this.attackWindup = 0.28 + Math.random() * 0.45
       return
     }
 
     this.attackWindup -= dt
     if (this.attackWindup > 0) return
 
-    // Wind-up done — swing
     game.tryAttack(this.seatId, yaw, poseMap)
     this.attackWindup = -1
     this.windupTargetId = null
-    // Random cooldown so bots don't chain-attack instantly after picking another bat
-    this.attackCooldown = 0.9 + Math.random() * 0.8 // 0.9–1.7s
+    this.attackCooldown = 0.7 + Math.random() * 0.6
   }
 
   private chooseTarget(
@@ -225,13 +216,24 @@ export class BotController {
     game: GameSim,
     stackLen: number,
     homeIndex: number,
+    poseMap: Map<string, { x: number; y: number; z: number }>,
   ): void {
     const home = getHomeSlot(homeIndex).spawn
     const px = seat.pose!.x
     const pz = seat.pose!.z
     const st = game.getPlayerState(this.seatId)!
 
-    // Deposit when full or no field targets while carrying
+    // Holding mace: hunt enemies (unless bag is full — deposit first)
+    if (st.item && isStunBat(st.item) && stackLen < MAX_CARRY) {
+      const prey = nearestPrey(this.seatId, px, pz, game, poseMap)
+      if (prey) {
+        this.mode = 'hunt'
+        this.targetX = prey.x
+        this.targetZ = prey.z
+        return
+      }
+    }
+
     if (stackLen >= MAX_CARRY) {
       this.mode = 'go_home'
       this.targetX = home.x
@@ -239,10 +241,20 @@ export class BotController {
       return
     }
 
-    // Raid sometimes
+    // Empty hand: often go for a mace first (combat AI)
+    if (!st.item) {
+      const mace = nearestMace(game, px, pz)
+      if (mace && (stackLen === 0 || Math.random() < 0.55)) {
+        this.mode = 'seek_field'
+        this.targetX = mace.x
+        this.targetZ = mace.z
+        return
+      }
+    }
+
     if (stackLen >= 1 && stackLen < MAX_CARRY && this.raidCooldown <= 0) {
       const raid = this.findRaid(st, homeIndex, game)
-      if (raid && Math.random() < 0.4) {
+      if (raid && Math.random() < 0.35) {
         this.mode = 'raid'
         this.targetX = raid.x
         this.targetZ = raid.z
@@ -264,6 +276,17 @@ export class BotController {
       this.targetX = home.x
       this.targetZ = home.z
       return
+    }
+
+    // No cards: hunt with mace if any, else wander
+    if (st.item && isStunBat(st.item)) {
+      const prey = nearestPrey(this.seatId, px, pz, game, poseMap)
+      if (prey) {
+        this.mode = 'hunt'
+        this.targetX = prey.x
+        this.targetZ = prey.z
+        return
+      }
     }
 
     this.mode = 'wander'
@@ -292,18 +315,55 @@ export class BotController {
 
 function standingYForBot(x: number, z: number, homeIndex: number): number {
   const home = getHomeSlot(homeIndex).center
-  // On own platform footprint use home height; else arena floor.
   if (Math.abs(x - home.x) < 4.5 && Math.abs(z - home.z) < 4.5) {
     return BOT_HOME_STAND_Y
   }
   return BOT_STAND_Y
 }
 
+function nearestMace(
+  game: GameSim,
+  px: number,
+  pz: number,
+): { x: number; z: number } | null {
+  let best: { x: number; z: number; d: number } | null = null
+  for (const g of game.listGround()) {
+    if (!isStunBat(g.card)) continue
+    const d = Math.hypot(g.x - px, g.z - pz)
+    if (!best || d < best.d) best = { x: g.x, z: g.z, d }
+  }
+  return best
+}
+
+/** Prefer live players with cards; dummy as last resort. */
+function nearestPrey(
+  selfId: string,
+  px: number,
+  pz: number,
+  game: GameSim,
+  poseMap: Map<string, { x: number; y: number; z: number }>,
+): { x: number; z: number } | null {
+  let best: { x: number; z: number; d: number } | null = null
+  for (const [id, pos] of poseMap) {
+    if (id === selfId) continue
+    if (game.isStunned(id)) continue
+    const d = Math.hypot(pos.x - px, pos.z - pz)
+    if (d > MACE_CHASE_RANGE) continue
+    const other = game.getPlayerState(id)
+    let score = d
+    if (id === TRAINING_DUMMY_ID) score += 2.5
+    if (other && other.stack.length > 0) score -= 2.0
+    // Soft floor so we still approach engage distance
+    if (d < MACE_ENGAGE * 0.5) score -= 0.5
+    if (!best || score < best.d) best = { x: pos.x, z: pos.z, d: score }
+  }
+  return best
+}
+
 /**
- * Nearest field target the bot can actually pick up:
- * - number: empty stack or canStackOn(top, card)
- * - hand item (mace / skip): only if hand slot empty
- * Prefer numbers over items.
+ * Nearest field target:
+ * numbers when stack-legal; items if hand empty.
+ * Prefer mace over skip; numbers still preferred when carrying stack.
  */
 function nearestLegalField(
   game: GameSim,
@@ -316,20 +376,34 @@ function nearestLegalField(
   const top = st.stack.length ? st.stack[st.stack.length - 1]! : null
 
   let bestNum: { x: number; z: number; d: number } | null = null
-  let bestItem: { x: number; z: number; d: number } | null = null
+  let bestMace: { x: number; z: number; d: number } | null = null
+  let bestSkip: { x: number; z: number; d: number } | null = null
 
   for (const g of game.listGround()) {
     const d = Math.hypot(g.x - px, g.z - pz)
     if (isHandItem(g.card)) {
       if (!canPickupItem(!!st.item, g.card)) continue
-      if (!bestItem || d < bestItem.d) bestItem = { x: g.x, z: g.z, d }
+      if (isStunBat(g.card)) {
+        if (!bestMace || d < bestMace.d) bestMace = { x: g.x, z: g.z, d }
+      } else if (isSkipTrap(g.card)) {
+        if (!bestSkip || d < bestSkip.d) bestSkip = { x: g.x, z: g.z, d }
+      }
       continue
     }
     if (top && !canStackOn(top, g.card)) continue
     if (!bestNum || d < bestNum.d) bestNum = { x: g.x, z: g.z, d }
   }
 
+  // Empty bag: mace > number > skip
+  if (!top) {
+    if (bestMace) return bestMace
+    if (bestNum) return bestNum
+    if (bestSkip) return bestSkip
+    return null
+  }
+  // Carrying: finish stack path first, else mace
   if (bestNum) return bestNum
-  if (bestItem) return bestItem
+  if (bestMace) return bestMace
+  if (bestSkip) return bestSkip
   return null
 }

@@ -13,7 +13,11 @@ import {
   TRAINING_DUMMY_ID,
   TRAINING_DUMMY_STACK,
 } from '../shared/config/dummy.ts'
-import { createRandomCards } from '../shared/uno/deck.ts'
+import {
+  createRandomCards,
+  createSkipTrap,
+  createStunBat,
+} from '../shared/uno/deck.ts'
 import { canStackOn } from '../shared/uno/rules.ts'
 import {
   ATTACK_CONE_DEG,
@@ -22,8 +26,17 @@ import {
   isHandItem,
   isSkipTrap,
   isStunBat,
+  KNOCKBACK_DIST,
+  KNOCKBACK_DURATION_MS,
   SKIP_TRAP_RADIUS,
   SKIP_TRAP_STUN_MS,
+  SLIDE_BASE_DIST,
+  SLIDE_COOLDOWN_MS,
+  SLIDE_DIST_MIN_MULT,
+  SLIDE_DIST_PENALTY_PER_CARD,
+  SLIDE_DURATION_MS,
+  SLIDE_HIT_RADIUS,
+  SLIDE_RECOVER_MS,
   STUN_DROP_MAX,
   STUN_DURATION_MS,
   type UnoCardData,
@@ -71,6 +84,10 @@ export type PlayerGameState = {
   lastAttackAt: number
   /** After G-drop: cannot re-pick hand items until this epoch ms. */
   itemPickupBlockUntil: number
+  /** Cannot slide until this epoch ms. */
+  lastSlideAt: number
+  /** Slide dash + recover lock ends at this epoch ms. */
+  slideBusyUntil: number
 }
 
 export type GameSimEvents = {
@@ -112,8 +129,33 @@ export type GameSimEvents = {
   ) => void
   onScores: (scores: { id: string; score: number; stackCount: number }[]) => void
   onStunned: (playerId: string, until: number, durationMs: number) => void
-  onAttackHit: (attackerId: string, victimId: string, dropped: number) => void
+  onAttackHit: (
+    attackerId: string,
+    victimId: string,
+    dropped: number,
+    knock: {
+      fromX: number
+      fromY: number
+      fromZ: number
+      toX: number
+      toY: number
+      toZ: number
+      durationMs: number
+    },
+  ) => void
   onAttackMiss: (attackerId: string) => void
+  onSlide: (info: {
+    playerId: string
+    fromX: number
+    fromY: number
+    fromZ: number
+    toX: number
+    toY: number
+    toZ: number
+    durationMs: number
+    recoverMs: number
+    hitVictimId: string | null
+  }) => void
   onTrapPlaced: (trap: PlacedTrap) => void
   onTrapRemoved: (trapId: string, reason: 'triggered' | 'cleared') => void
   onTrapTriggered: (info: {
@@ -220,6 +262,8 @@ export class GameSim {
       stunUntil: 0,
       lastAttackAt: 0,
       itemPickupBlockUntil: 0,
+      lastSlideAt: 0,
+      slideBusyUntil: 0,
     })
   }
 
@@ -242,6 +286,8 @@ export class GameSim {
       p.stunUntil = 0
       p.lastAttackAt = 0
       p.itemPickupBlockUntil = 0
+      p.lastSlideAt = 0
+      p.slideBusyUntil = 0
     }
   }
 
@@ -261,6 +307,13 @@ export class GameSim {
   isStunned(playerId: string, now = Date.now()): boolean {
     const p = this.players.get(playerId)
     return !!p && p.stunUntil > now
+  }
+
+  /** Stunned or mid slide/recover — no pickup / attack / slide. */
+  isActionLocked(playerId: string, now = Date.now()): boolean {
+    const p = this.players.get(playerId)
+    if (!p) return true
+    return p.stunUntil > now || p.slideBusyUntil > now
   }
 
   removePlayer(playerId: string, dropAt: { x: number; z: number } | null): void {
@@ -350,8 +403,8 @@ export class GameSim {
 
     for (const [playerId, pose] of poses) {
       if (playerId === TRAINING_DUMMY_ID) continue
-      // Stunned: no pickup / deposit / steal until stun ends
-      if (this.isStunned(playerId)) continue
+      // Stunned / slide recover: no pickup / deposit / steal
+      if (this.isActionLocked(playerId)) continue
       this.tryInteract(playerId, pose.x, pose.z)
     }
 
@@ -405,8 +458,20 @@ export class GameSim {
   /** Immediate interaction after a pose update (no spawn). */
   interactOne(playerId: string, x: number, z: number): void {
     if (!this.started) return
-    if (this.isStunned(playerId)) return
+    if (this.isActionLocked(playerId)) return
     this.tryInteract(playerId, x, z)
+  }
+
+  /** Dev/test: force hand item (replaces current). */
+  debugGiveItem(playerId: string, kind: 'stun_bat' | 'skip_trap'): void {
+    if (!this.started) return
+    if (playerId === TRAINING_DUMMY_ID) return
+    const p = this.players.get(playerId)
+    if (!p) return
+    p.item = kind === 'skip_trap' ? createSkipTrap() : createStunBat()
+    p.itemPickupBlockUntil = 0
+    this.events.onPrivateState(playerId, [...p.stack], p.score, p.item)
+    this.emitScores()
   }
 
   /**
@@ -524,13 +589,125 @@ export class GameSim {
     atk.item = null
     this.events.onPrivateState(attackerId, [...atk.stack], atk.score, null)
 
-    const vic = this.players.get(bestId)!
-    // Drop only backpack numbers: min(4, stack). Never knock off victim hand item.
+    this.applyVictimHit(attackerId, bestId, fx, fz, poses, now)
+  }
+
+  /**
+   * Empty-hand slide tackle: dash forward, hit first non-stunned body on path.
+   * Hit effects = mace knock + card drop. Recover hardstun same on hit/miss.
+   */
+  trySlide(
+    attackerId: string,
+    yaw: number,
+    poses: Map<string, { x: number; y: number; z: number }>,
+  ): void {
+    if (!this.started) return
+    const now = Date.now()
+    const atk = this.players.get(attackerId)
+    if (!atk || this.isActionLocked(attackerId, now)) return
+    if (atk.item) return // has prop → use attack instead
+    if (now - atk.lastSlideAt < SLIDE_COOLDOWN_MS) return
+
+    const ap = poses.get(attackerId)
+    if (!ap) return
+
+    const fx = Math.sin(yaw)
+    const fz = Math.cos(yaw)
+    const mult = Math.max(
+      SLIDE_DIST_MIN_MULT,
+      1 - SLIDE_DIST_PENALTY_PER_CARD * atk.stack.length,
+    )
+    const dist = SLIDE_BASE_DIST * mult
+    const lim = 17
+    const toX = Math.max(-lim, Math.min(lim, ap.x + fx * dist))
+    const toZ = Math.max(-lim, Math.min(lim, ap.z + fz * dist))
+
+    // First non-stunned target near the slide segment
+    let bestId: string | null = null
+    let bestT = Infinity
+    for (const [id] of this.players) {
+      if (id === attackerId) continue
+      if (this.isStunned(id, now)) continue // 眩晕中不能被铲
+      const pos = poses.get(id)
+      if (!pos) continue
+      const hit = pointNearSegment(
+        pos.x,
+        pos.z,
+        ap.x,
+        ap.z,
+        toX,
+        toZ,
+        SLIDE_HIT_RADIUS,
+      )
+      if (!hit) continue
+      if (hit.t < bestT) {
+        bestT = hit.t
+        bestId = id
+      }
+    }
+
+    atk.lastSlideAt = now
+    atk.slideBusyUntil = now + SLIDE_DURATION_MS + SLIDE_RECOVER_MS
+    poses.set(attackerId, { x: toX, y: ap.y, z: toZ })
+
+    this.events.onSlide({
+      playerId: attackerId,
+      fromX: ap.x,
+      fromY: ap.y,
+      fromZ: ap.z,
+      toX,
+      toY: ap.y,
+      toZ,
+      durationMs: SLIDE_DURATION_MS,
+      recoverMs: SLIDE_RECOVER_MS,
+      hitVictimId: bestId,
+    })
+
+    if (bestId) {
+      this.applyVictimHit(attackerId, bestId, fx, fz, poses, now)
+    }
+  }
+
+  /** Shared knockback + backpack drop + stun (mace / slide). */
+  private applyVictimHit(
+    attackerId: string,
+    victimId: string,
+    dirX: number,
+    dirZ: number,
+    poses: Map<string, { x: number; y: number; z: number }>,
+    now: number,
+  ): void {
+    const vic = this.players.get(victimId)
+    const vp = poses.get(victimId)
+    if (!vic || !vp) return
+    if (this.isStunned(victimId, now)) return
+
+    let kx = dirX
+    let kz = dirZ
+    const awayX = vp.x - (poses.get(attackerId)?.x ?? vp.x - dirX)
+    const awayZ = vp.z - (poses.get(attackerId)?.z ?? vp.z - dirZ)
+    const awayLen = Math.hypot(awayX, awayZ)
+    if (awayLen > 0.05) {
+      kx = awayX / awayLen
+      kz = awayZ / awayLen
+    }
+    const lim = 17
+    const toX = Math.max(-lim, Math.min(lim, vp.x + kx * KNOCKBACK_DIST))
+    const toZ = Math.max(-lim, Math.min(lim, vp.z + kz * KNOCKBACK_DIST))
+    const knock = {
+      fromX: vp.x,
+      fromY: vp.y,
+      fromZ: vp.z,
+      toX,
+      toY: vp.y,
+      toZ,
+      durationMs: KNOCKBACK_DURATION_MS,
+    }
+    poses.set(victimId, { x: toX, y: vp.y, z: toZ })
+
     const dropN = Math.min(STUN_DROP_MAX, vic.stack.length)
     const dropped: GroundCard[] = []
-    const vp = poses.get(bestId)!
     let removed = 0
-    // Walk from top; strip stray hand-items if they leaked into backpack
     for (let guard = 0; guard < 32 && removed < dropN && vic.stack.length; guard++) {
       const top = vic.stack[vic.stack.length - 1]!
       if (isHandItem(top)) {
@@ -539,13 +716,16 @@ export class GameSim {
       }
       const card = vic.stack.pop()
       if (!card) break
-      const ang = (removed / Math.max(1, dropN)) * Math.PI * 2 + 0.4
-      const rad = 0.85 + (removed % 2) * 0.35
+      const ang = (removed / Math.max(1, dropN)) * Math.PI * 2 + 0.35
+      const rad = 0.7 + (removed % 2) * 0.45
+      const mix = 0.55 + removed * 0.08
+      const cx = vp.x + (toX - vp.x) * mix
+      const cz = vp.z + (toZ - vp.z) * mix
       dropped.push({
         card,
-        x: vp.x + Math.cos(ang) * rad,
+        x: cx + Math.cos(ang) * rad,
         y: 0.55,
-        z: vp.z + Math.sin(ang) * rad,
+        z: cz + Math.sin(ang) * rad,
         source: 'stun_drop',
       })
       removed++
@@ -553,17 +733,15 @@ export class GameSim {
     if (dropped.length) {
       this.ground.push(...dropped)
       this.events.onSpawn(dropped, {
-        burstFrom: { x: vp.x, y: vp.y, z: vp.z },
+        burstFrom: { x: vp.x, y: vp.y + 0.6, z: vp.z },
       })
     }
 
-    // Victim hand item is intentionally kept
     vic.stunUntil = now + STUN_DURATION_MS
-    this.events.onStunned(bestId, vic.stunUntil, STUN_DURATION_MS)
-    this.events.onPrivateState(bestId, [...vic.stack], vic.score, vic.item)
-    this.events.onAttackHit(attackerId, bestId, dropped.length)
-    // Dummy: auto-refill backpack shortly after stun so you can re-test
-    if (bestId === TRAINING_DUMMY_ID) {
+    this.events.onStunned(victimId, vic.stunUntil, STUN_DURATION_MS)
+    this.events.onPrivateState(victimId, [...vic.stack], vic.score, vic.item)
+    this.events.onAttackHit(attackerId, victimId, dropped.length, knock)
+    if (victimId === TRAINING_DUMMY_ID) {
       this.dummyRefillAt = now + STUN_DURATION_MS + 250
     }
     this.emitScores()
@@ -572,8 +750,7 @@ export class GameSim {
   private tryInteract(playerId: string, x: number, z: number): void {
     const p = this.players.get(playerId)
     if (!p) return
-    // Belt-and-suspenders: never interact while stunned (pickup/deposit/steal)
-    if (this.isStunned(playerId)) return
+    if (this.isActionLocked(playerId)) return
 
     // Own home: unload backpack → home pile (ends this steal trip).
     const inOwnHome = isInsideHomeSlot(p.homeIndex, x, z)
@@ -794,4 +971,29 @@ export class GameSim {
   private emitScores(): void {
     this.events.onScores(this.getScores())
   }
+}
+
+/** Point-to-segment hit test in XZ. t in [0,1] along segment. */
+function pointNearSegment(
+  px: number,
+  pz: number,
+  ax: number,
+  az: number,
+  bx: number,
+  bz: number,
+  radius: number,
+): { t: number; dist: number } | null {
+  const abx = bx - ax
+  const abz = bz - az
+  const len2 = abx * abx + abz * abz
+  let t = 0
+  if (len2 > 1e-8) {
+    t = ((px - ax) * abx + (pz - az) * abz) / len2
+    t = Math.max(0, Math.min(1, t))
+  }
+  const cx = ax + abx * t
+  const cz = az + abz * t
+  const dist = Math.hypot(px - cx, pz - cz)
+  if (dist > radius) return null
+  return { t, dist }
 }

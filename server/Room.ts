@@ -144,11 +144,56 @@ export class Room {
       onStunned: (playerId, until, durationMs) => {
         this.broadcast({ type: 'player_stunned', playerId, until, durationMs })
       },
-      onAttackHit: (attackerId, victimId, dropped) => {
-        this.broadcast({ type: 'attack_hit', attackerId, victimId, dropped })
+      onAttackHit: (attackerId, victimId, dropped, knock) => {
+        // Snap victim pose to knock land (authoritative); clients animate the arc
+        const seat = this.seats.get(victimId)
+        if (seat?.pose) {
+          seat.pose = {
+            ...seat.pose,
+            x: knock.toX,
+            y: knock.toY,
+            z: knock.toZ,
+            seq: (seat.pose.seq ?? 0) + 1,
+          }
+          seat.lastPoseAt = Date.now()
+        }
+        this.broadcast({
+          type: 'attack_hit',
+          attackerId,
+          victimId,
+          dropped,
+          knock,
+        })
       },
       onAttackMiss: (attackerId) => {
         this.sendTo(attackerId, { type: 'attack_miss', attackerId })
+      },
+      onSlide: (info) => {
+        const seat = this.seats.get(info.playerId)
+        if (seat?.pose) {
+          seat.pose = {
+            ...seat.pose,
+            x: info.toX,
+            y: info.toY,
+            z: info.toZ,
+            yaw: Math.atan2(info.toX - info.fromX, info.toZ - info.fromZ),
+            seq: (seat.pose.seq ?? 0) + 1,
+          }
+          seat.lastPoseAt = Date.now()
+        }
+        this.broadcast({
+          type: 'player_slide',
+          playerId: info.playerId,
+          fromX: info.fromX,
+          fromY: info.fromY,
+          fromZ: info.fromZ,
+          toX: info.toX,
+          toY: info.toY,
+          toZ: info.toZ,
+          durationMs: info.durationMs,
+          recoverMs: info.recoverMs,
+          hitVictimId: info.hitVictimId,
+        })
       },
       onTrapPlaced: (trap) => {
         this.broadcast({ type: 'trap_placed', trap })
@@ -543,14 +588,29 @@ export class Room {
 
   handleAttack(seatId: string, yaw: number): void {
     if (this.phase !== 'playing') return
-    if (this.game.isStunned(seatId)) return
+    if (this.game.isActionLocked(seatId)) return
     const poses = this.collectPoseMap()
     this.game.tryAttack(seatId, yaw, poses)
   }
 
+  handleDebugGiveItem(
+    seatId: string,
+    kind: 'stun_bat' | 'skip_trap',
+  ): void {
+    if (this.phase !== 'playing') return
+    this.game.debugGiveItem(seatId, kind)
+  }
+
+  handleSlide(seatId: string, yaw: number): void {
+    if (this.phase !== 'playing') return
+    if (this.game.isActionLocked(seatId)) return
+    const poses = this.collectPoseMap()
+    this.game.trySlide(seatId, yaw, poses)
+  }
+
   handleDiscardItem(seatId: string, yaw: number): void {
     if (this.phase !== 'playing') return
-    if (this.game.isStunned(seatId)) return
+    if (this.game.isActionLocked(seatId)) return
     const poses = this.collectPoseMap()
     this.game.tryDiscardItem(seatId, yaw, poses)
   }
@@ -574,7 +634,8 @@ export class Room {
     if (this.phase !== 'playing') return
     const seat = this.seats.get(seatId)
     if (!seat || !seat.connected) return
-    if (this.game.isStunned(seatId)) return
+    // Stunned / sliding: ignore client pose so authority (knock/slide land) sticks
+    if (this.game.isActionLocked(seatId)) return
 
     if (
       !finiteNum(msg.x) ||

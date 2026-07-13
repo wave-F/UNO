@@ -18,6 +18,7 @@ import { TRAINING_DUMMY_ID } from '../../shared/config/dummy'
 import type { PublicPlayer } from '../../shared/protocol'
 import { isSkipTrap, type UnoCardData } from '../game/uno/types'
 import { TrainingDummy } from '../entities/TrainingDummy'
+import { WorldSlideCorridor } from '../entities/SlideRangeVisual'
 
 export class Game {
   private renderer!: WebGPURenderer
@@ -33,6 +34,7 @@ export class Game {
   private trapSystem: SkipTrapSystem | null = null
   private trainingDummy: TrainingDummy | null = null
   private pendingDummyStack: UnoCardData[] | null = null
+  private slideCorridor: WorldSlideCorridor | null = null
   private net: NetClient | null = null
   private unsubs: Array<() => void> = []
   private clock = new THREE.Clock()
@@ -101,6 +103,12 @@ export class Game {
     }) => void,
   ): void {
     this.onMatchEnd = cb
+  }
+
+  private onSlideCd: (() => void) | null = null
+
+  setSlideCdListener(cb: () => void): void {
+    this.onSlideCd = cb
   }
 
   private matchLive = false
@@ -263,9 +271,48 @@ export class Game {
           this.remotes.setStunned(playerId, until, durationMs)
         }
       }),
-      net.on('attackHit', (attackerId, victimId, dropped) => {
-        // Redundant hit FX if stun packet arrives late/out of order
-        if (victimId === TRAINING_DUMMY_ID) {
+      net.on('playerSlide', (info) => {
+        if (!this.matchLive) return
+        // World-fixed corridor = exact server segment (does not spin with body lean)
+        this.slideCorridor?.show(
+          info.fromX,
+          info.fromZ,
+          info.toX,
+          info.toZ,
+          info.durationMs + info.recoverMs,
+        )
+        // Hide local idle preview while sliding
+        if (info.playerId === net.playerId) {
+          this.playerCtrl.player.slideRange.setIdlePreview(false)
+          this.playerCtrl.playSlide(
+            info.toX,
+            info.toZ,
+            info.durationMs,
+            info.recoverMs,
+          )
+          this.onSlideCd?.()
+        } else {
+          this.remotes.playSlide(info.playerId, info)
+        }
+      }),
+      net.on('attackHit', (attackerId, victimId, dropped, knock) => {
+        // Knock arc + card burst (cards come via cards_spawned with burstFrom)
+        if (knock) {
+          if (victimId === TRAINING_DUMMY_ID) {
+            this.trainingDummy?.playHit(knock.durationMs, knock.fromX, knock.fromZ)
+            this.trainingDummy?.playKnockback(
+              knock.fromX,
+              knock.fromZ,
+              knock.toX,
+              knock.toZ,
+              knock.durationMs,
+            )
+          } else if (victimId === net.playerId) {
+            this.playerCtrl.playKnockback(knock.toX, knock.toZ, knock.durationMs)
+          } else {
+            this.remotes.playKnockback(victimId, knock)
+          }
+        } else if (victimId === TRAINING_DUMMY_ID) {
           const pos = this.playerCtrl.getPosition()
           this.trainingDummy?.playHit(1500, pos.x, pos.z)
         }
@@ -274,10 +321,10 @@ export class Game {
             victimId === TRAINING_DUMMY_ID ? '木头人' : '对方'
           this.onPickupFeedback({
             type: 'toast',
-            text: `击中${who}！掉落 ${dropped} 张 · 狼牙棒已消耗`,
+            text: `击中${who}！击飞并掉落 ${dropped} 张 · 狼牙棒已消耗`,
             kind: 'ok',
           })
-        } else {
+        } else if (attackerId !== net.playerId) {
           this.remotes.playSwing(attackerId)
         }
       }),
@@ -516,6 +563,9 @@ export class Game {
     this.playerCtrl = new PlayerController(this.physics, this.input, this.cameraFollow)
     this.scene.add(this.playerCtrl.player.mesh)
 
+    this.slideCorridor = new WorldSlideCorridor()
+    this.scene.add(this.slideCorridor.root)
+
     this.cardSystem = new CardPickupSystem(
       (fb) => {
         if (fb.type === 'picked') {
@@ -598,6 +648,7 @@ export class Game {
     this.remotes.update(dt)
     this.trapSystem?.update(dt)
     this.trainingDummy?.update(dt)
+    this.slideCorridor?.update(dt)
 
     if (this.net?.isPlaying) {
       this.net.tickPose(dt, {
@@ -608,18 +659,16 @@ export class Game {
       })
       if (this.input.consumeAttack() && !this.playerCtrl.isStunned()) {
         const held = this.playerCtrl.player.getHeldItem()
-        if (!held) {
-          this.onPickupFeedback({
-            type: 'toast',
-            text: '没有道具，先去场上捡狼牙棒或 Skip',
-            kind: 'bad',
-          })
-        } else {
-          // Mace: local swing FX; skip: server places trap (no melee fan)
+        const yaw = this.playerCtrl.getYaw()
+        if (held) {
+          // Has prop: use item (skip place / legacy mace)
           if (!isSkipTrap(held)) {
             this.playerCtrl.player.playSwing()
           }
-          this.net.attack(this.playerCtrl.getYaw())
+          this.net.attack(yaw)
+        } else {
+          // Empty hand: slide tackle (server is authority)
+          this.net.slide(yaw)
         }
       }
       if (this.input.consumeDiscardItem() && !this.playerCtrl.isStunned()) {

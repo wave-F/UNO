@@ -80,3 +80,22 @@ export const ATTACK_RANGE = 1.6
 /** Half-angle of forward cone (degrees). */
 export const ATTACK_CONE_DEG = 55
 export const ATTACK_COOLDOWN_MS = 700
+/** Mace / slide hit: horizontal knock distance (meters). */
+export const KNOCKBACK_DIST = 3.8
+/** Client/server knock arc duration. */
+export const KNOCKBACK_DURATION_MS = 550
+
+/** Empty-hand slide tackle (铲球). */
+export const SLIDE_BASE_DIST = 4.0
+/** Each backpack card shortens slide by this fraction of base (clamped). */
+export const SLIDE_DIST_PENALTY_PER_CARD = 0.1
+/** Minimum slide distance mult (never shorter than this × base). */
+export const SLIDE_DIST_MIN_MULT = 0.35
+/** Active slide travel time. */
+export const SLIDE_DURATION_MS = 300
+/** Hard stun after slide stops (hit or miss same). */
+export const SLIDE_RECOVER_MS = 300
+/** Cooldown between slides (from slide start). */
+export const SLIDE_COOLDOWN_MS = 5000
+/** Hit radius along slide segment (meters). */
+export const SLIDE_HIT_RADIUS = 0.95

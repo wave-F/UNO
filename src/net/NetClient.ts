@@ -104,8 +104,33 @@ export type NetClientEvents = {
   playerItem: (playerId: string, item: UnoCardData | null) => void
   scores: (scores: ScoreEntry[]) => void
   playerStunned: (playerId: string, until: number, durationMs: number) => void
-  attackHit: (attackerId: string, victimId: string, dropped: number) => void
+  attackHit: (
+    attackerId: string,
+    victimId: string,
+    dropped: number,
+    knock?: {
+      fromX: number
+      fromY: number
+      fromZ: number
+      toX: number
+      toY: number
+      toZ: number
+      durationMs: number
+    },
+  ) => void
   attackMiss: () => void
+  playerSlide: (info: {
+    playerId: string
+    fromX: number
+    fromY: number
+    fromZ: number
+    toX: number
+    toY: number
+    toZ: number
+    durationMs: number
+    recoverMs: number
+    hitVictimId: string | null
+  }) => void
   trapPlaced: (trap: PlacedTrapWire) => void
   trapRemoved: (trapId: string, reason: 'triggered' | 'cleared') => void
   trapTriggered: (info: {
@@ -231,16 +256,28 @@ export class NetClient {
     this.send({ type: 'remove_bot' })
   }
 
-  /** Melee attack (stun bat). yaw = facing. */
+  /** Melee attack (stun bat) / place skip. yaw = facing. */
   attack(yaw: number): void {
     if (!this.isPlaying) return
     this.send({ type: 'attack', yaw })
+  }
+
+  /** Empty-hand slide tackle. */
+  slide(yaw: number): void {
+    if (!this.isPlaying) return
+    this.send({ type: 'slide', yaw })
   }
 
   /** Drop hand item onto ground in front. */
   discardItem(yaw: number): void {
     if (!this.isPlaying) return
     this.send({ type: 'discard_item', yaw })
+  }
+
+  /** Dev/test: put stun bat or skip into hand. */
+  debugGiveItem(kind: 'stun_bat' | 'skip_trap'): void {
+    if (!this.isPlaying) return
+    this.send({ type: 'debug_give_item', kind })
   }
 
   leaveRoom(): void {
@@ -519,10 +556,24 @@ export class NetClient {
         this.emit('playerStunned', msg.playerId, msg.until, msg.durationMs)
         break
       case 'attack_hit':
-        this.emit('attackHit', msg.attackerId, msg.victimId, msg.dropped)
+        this.emit('attackHit', msg.attackerId, msg.victimId, msg.dropped, msg.knock)
         break
       case 'attack_miss':
         this.emit('attackMiss')
+        break
+      case 'player_slide':
+        this.emit('playerSlide', {
+          playerId: msg.playerId,
+          fromX: msg.fromX,
+          fromY: msg.fromY,
+          fromZ: msg.fromZ,
+          toX: msg.toX,
+          toY: msg.toY,
+          toZ: msg.toZ,
+          durationMs: msg.durationMs,
+          recoverMs: msg.recoverMs,
+          hitVictimId: msg.hitVictimId,
+        })
         break
       case 'trap_placed':
         this.emit('trapPlaced', msg.trap)

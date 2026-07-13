@@ -29,6 +29,14 @@ export class TrainingDummy {
   private hitDirX = 0
   private hitDirZ = 1
   private readonly bodyMats: THREE.MeshStandardMaterial[] = []
+  private knock: {
+    t: number
+    duration: number
+    fromX: number
+    fromZ: number
+    toX: number
+    toZ: number
+  } | null = null
 
   constructor() {
     this.root.name = 'TrainingDummy'
@@ -178,8 +186,49 @@ export class TrainingDummy {
     this.stunFx.setStunnedUntil(untilMs, durationMs)
   }
 
+  /** Visual-only knock (dummy stays authoritative at center after anim). */
+  playKnockback(
+    fromX: number,
+    fromZ: number,
+    toX: number,
+    toZ: number,
+    durationMs: number,
+  ): void {
+    this.knock = {
+      t: 0,
+      duration: Math.max(0.2, durationMs / 1000),
+      fromX,
+      fromZ,
+      toX,
+      toZ,
+    }
+  }
+
   update(dt: number): void {
     this.stunFx.update(dt)
+
+    if (this.knock) {
+      this.knock.t += dt
+      const u = Math.min(1, this.knock.t / this.knock.duration)
+      // Arc out then spring back to home base so dummy stays a training target
+      const out = Math.sin(u * Math.PI)
+      const x =
+        this.baseX +
+        (this.knock.toX - this.knock.fromX) * out * 0.85
+      const z =
+        this.baseZ +
+        (this.knock.toZ - this.knock.fromZ) * out * 0.85
+      const y = this.baseY + Math.sin(u * Math.PI) * 0.9
+      this.root.position.set(x, y, z)
+      this.body.rotation.x = Math.sin(u * Math.PI) * 0.7
+      this.body.rotation.z = Math.sin(u * Math.PI * 2) * 0.35
+      if (u >= 1) {
+        this.root.position.set(this.baseX, this.baseY, this.baseZ)
+        this.body.rotation.set(0, 0, 0)
+        this.knock = null
+      }
+      return
+    }
 
     if (this.hitT >= 0) {
       this.hitT += dt

@@ -116,6 +116,16 @@ export type ClientMessage =
       type: 'discard_item'
       yaw: number
     }
+  | {
+      /** Empty-hand slide tackle (铲球). */
+      type: 'slide'
+      yaw: number
+    }
+  | {
+      /** Dev/test: put an item into hand slot (replaces current hand item). */
+      type: 'debug_give_item'
+      kind: 'stun_bat' | 'skip_trap'
+    }
 
 // ── Server → Client ─────────────────────────────────────────
 
@@ -283,10 +293,35 @@ export type ServerMessage =
       attackerId: string
       victimId: string
       dropped: number
+      /** Victim flies from → to while cards burst (optional for older clients). */
+      knock?: {
+        fromX: number
+        fromY: number
+        fromZ: number
+        toX: number
+        toY: number
+        toZ: number
+        durationMs: number
+      }
     }
   | {
       type: 'attack_miss'
       attackerId: string
+    }
+  | {
+      /** Player performs slide tackle (lie flat + dash). */
+      type: 'player_slide'
+      playerId: string
+      fromX: number
+      fromY: number
+      fromZ: number
+      toX: number
+      toY: number
+      toZ: number
+      durationMs: number
+      recoverMs: number
+      /** If set, this victim was hit during the slide (also gets attack_hit). */
+      hitVictimId: string | null
     }
   | {
       type: 'trap_placed'
@@ -340,6 +375,8 @@ export function isClientMessage(data: unknown): data is ClientMessage {
     t === 'ping' ||
     t === 'pose' ||
     t === 'attack' ||
-    t === 'discard_item'
+    t === 'discard_item' ||
+    t === 'slide' ||
+    t === 'debug_give_item'
   )
 }

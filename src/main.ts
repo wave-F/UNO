@@ -41,6 +41,25 @@ game
       lobby.show()
       lobby.flashMatchEnd(info.message)
     })
+    game.setSlideCdListener(() => {
+      hud.startSlideCooldown()
+    })
+    hud.setDebugGiveListener((kind) => {
+      if (!net.isPlaying) {
+        hud.handleFeedback({
+          type: 'toast',
+          text: '请先进入对局再添加道具',
+          kind: 'bad',
+        })
+        return
+      }
+      net.debugGiveItem(kind)
+      hud.handleFeedback({
+        type: 'toast',
+        text: kind === 'stun_bat' ? '已添加狼牙棒到手持' : '已添加 Skip 到手持',
+        kind: 'ok',
+      })
+    })
     game.start()
   })
   .catch((err) => {
