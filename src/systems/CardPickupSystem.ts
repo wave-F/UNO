@@ -1,14 +1,26 @@
 import * as THREE from 'three'
 import { cardSpawnConfig } from '../config/cards'
-import { homeConfig, isInsideHome } from '../config/home'
+import {
+  getHomeSlot,
+  homeConfig,
+  isInsideAnyHome,
+  isInsideHomeSlot,
+} from '../config/home'
 import { createRandomCards } from '../game/uno/deck'
 import { canStackOn } from '../game/uno/rules'
 import { cardLabel, type UnoCardData } from '../game/uno/types'
-import { CardPickup, CARD_PICKUP_RADIUS } from '../entities/CardPickup'
+import { CardPickup } from '../entities/CardPickup'
+import { CARD_PICKUP_RADIUS } from '../../shared/config/cards'
+import type { GroundCardWire } from '../../shared/protocol'
 
 export type PickupFeedback =
   | { type: 'picked'; card: UnoCardData; stack: UnoCardData[] }
-  | { type: 'illegal'; card: UnoCardData; top: UnoCardData }
+  | {
+      type: 'illegal'
+      card: UnoCardData
+      top: UnoCardData
+      reason?: 'stack' | 'home_once'
+    }
   | { type: 'clear_prompt' }
   | {
       type: 'deposited'
@@ -16,13 +28,21 @@ export type PickupFeedback =
       deliveredTotal: number
     }
 
+/**
+ * Local authority (offline) or pure view driven by server (online).
+ */
 export class CardPickupSystem {
   readonly group = new THREE.Group()
-  private cards: CardPickup[] = []
+  private cards = new Map<string, CardPickup>()
   private stack: UnoCardData[] = []
   private lastIllegalId: string | null = null
   private spawnTimer = 0
   private readonly tmp = new THREE.Vector3()
+  /** offline = local sim; online = server is authority */
+  private mode: 'offline' | 'online' = 'offline'
+  private deliveredTotal = 0
+  /** Offline + local online home corner (0–3). */
+  private homeIndex: number = homeConfig.defaultSlot
 
   constructor(
     private onFeedback: (fb: PickupFeedback) => void,
@@ -30,7 +50,7 @@ export class CardPickupSystem {
     initialCount = cardSpawnConfig.initialCount,
   ) {
     this.group.name = 'CardPickups'
-    this.spawn(initialCount)
+    this.spawnLocal(initialCount)
   }
 
   getStack(): readonly UnoCardData[] {
@@ -41,17 +61,107 @@ export class CardPickupSystem {
     return this.stack.length ? this.stack[this.stack.length - 1]! : null
   }
 
+  getDeliveredTotal(): number {
+    return this.deliveredTotal
+  }
+
+  /** Switch to server-driven cards (clears local field). */
+  enterOnlineMode(): void {
+    this.mode = 'online'
+    this.clearField()
+    this.stack = []
+    this.deliveredTotal = 0
+    this.lastIllegalId = null
+  }
+
+  /** Leave room: restore local spawns. */
+  enterOfflineMode(): void {
+    this.mode = 'offline'
+    this.clearField()
+    this.stack = []
+    this.deliveredTotal = 0
+    this.lastIllegalId = null
+    this.spawnTimer = 0
+    this.spawnLocal(cardSpawnConfig.initialCount)
+  }
+
+  isOnline(): boolean {
+    return this.mode === 'online'
+  }
+
+  setHomeIndex(index: number): void {
+    this.homeIndex = ((index % 4) + 4) % 4
+  }
+
+  getHomeIndex(): number {
+    return this.homeIndex
+  }
+
+  // ── Server → view ─────────────────────────────────────────
+
+  applyGroundSnapshot(list: GroundCardWire[]): void {
+    if (this.mode !== 'online') return
+    this.clearField()
+    for (const g of list) this.addGround(g)
+  }
+
+  applySpawned(list: GroundCardWire[]): void {
+    if (this.mode !== 'online') return
+    for (const g of list) {
+      if (this.cards.has(g.card.id)) continue
+      this.addGround(g)
+    }
+  }
+
+  applyCardRemoved(cardId: string): void {
+    this.removeGround(cardId)
+  }
+
+  applyPrivateStack(stack: UnoCardData[], score: number): void {
+    this.stack = [...stack]
+    this.deliveredTotal = score
+  }
+
+  notifyPickedLocal(card: UnoCardData, stack: UnoCardData[]): void {
+    this.onFeedback({ type: 'picked', card, stack: [...stack] })
+  }
+
+  notifyIllegal(
+    card: UnoCardData,
+    top: UnoCardData,
+    reason?: 'stack' | 'home_once',
+  ): void {
+    this.onFeedback({ type: 'illegal', card, top, reason })
+  }
+
+  notifyClearIllegal(): void {
+    this.onFeedback({ type: 'clear_prompt' })
+  }
+
+  /** Deposit with real cards for home pile visuals. */
+  notifyDepositedCards(cards: UnoCardData[], score: number): void {
+    this.deliveredTotal = score
+    this.stack = []
+    this.onDepositToHome(cards)
+    this.onFeedback({ type: 'deposited', cards, deliveredTotal: score })
+  }
+
   update(playerPos: THREE.Vector3, dt: number): void {
-    for (const c of this.cards) c.update(dt)
+    for (const c of this.cards.values()) c.update(dt)
+
+    if (this.mode === 'online') {
+      // Server decides pickup/deposit; client only animates
+      return
+    }
 
     this.tickSpawner(dt, playerPos)
 
-    const inHome = isInsideHome(playerPos.x, playerPos.z)
-    if (inHome && this.stack.length > 0) {
+    const inOwnHome = isInsideHomeSlot(this.homeIndex, playerPos.x, playerPos.z)
+    if (inOwnHome && this.stack.length > 0) {
       this.depositHeld()
     }
 
-    if (inHome) {
+    if (inOwnHome || isInsideAnyHome(playerPos.x, playerPos.z)) {
       if (this.lastIllegalId !== null) {
         this.lastIllegalId = null
         this.onFeedback({ type: 'clear_prompt' })
@@ -62,8 +172,11 @@ export class CardPickupSystem {
     let nearest: CardPickup | null = null
     let nearestDist = Infinity
 
-    for (const c of this.cards) {
-      const d = c.mesh.position.distanceTo(playerPos)
+    for (const c of this.cards.values()) {
+      const d = Math.hypot(
+        c.mesh.position.x - playerPos.x,
+        c.mesh.position.z - playerPos.z,
+      )
       if (d < nearestDist) {
         nearestDist = d
         nearest = c
@@ -98,63 +211,92 @@ export class CardPickupSystem {
     if (this.spawnTimer < cardSpawnConfig.spawnIntervalSec) return
     this.spawnTimer = 0
 
-    const room = cardSpawnConfig.maxOnField - this.cards.length
+    const room = cardSpawnConfig.maxOnField - this.cards.size
     if (room <= 0) return
 
     const n = Math.min(cardSpawnConfig.spawnPerWave, room)
-    this.spawn(n, playerPos)
+    this.spawnLocal(n, playerPos)
   }
 
   private depositHeld(): void {
     const cards = [...this.stack]
     this.stack = []
     const deliveredTotal = this.onDepositToHome(cards)
+    this.deliveredTotal = deliveredTotal
     this.onFeedback({ type: 'deposited', cards, deliveredTotal })
   }
 
   private pickup(target: CardPickup): void {
     this.stack.push(target.card)
-    this.cards = this.cards.filter((c) => c !== target)
-    this.group.remove(target.mesh)
-    target.dispose()
+    this.removeGround(target.card.id)
     this.onFeedback({ type: 'picked', card: target.card, stack: [...this.stack] })
   }
 
-  private spawn(count: number, avoidPlayer: THREE.Vector3 | null = null): void {
+  private spawnLocal(count: number, avoidPlayer: THREE.Vector3 | null = null): void {
     if (count <= 0) return
     const data = createRandomCards(count)
     for (const card of data) {
       const pos = this.randomGroundPos(avoidPlayer)
-      const pickup = new CardPickup(card, pos)
-      this.cards.push(pickup)
-      this.group.add(pickup.mesh)
+      this.addPickup(card, pos)
     }
+  }
+
+  private addGround(g: GroundCardWire): void {
+    this.addPickup(g.card, new THREE.Vector3(g.x, g.y, g.z))
+  }
+
+  private addPickup(card: UnoCardData, pos: THREE.Vector3): void {
+    if (this.cards.has(card.id)) return
+    const pickup = new CardPickup(card, pos)
+    this.cards.set(card.id, pickup)
+    this.group.add(pickup.mesh)
+  }
+
+  private removeGround(cardId: string): void {
+    const c = this.cards.get(cardId)
+    if (!c) return
+    this.group.remove(c.mesh)
+    c.dispose()
+    this.cards.delete(cardId)
+  }
+
+  private clearField(): void {
+    for (const c of this.cards.values()) {
+      this.group.remove(c.mesh)
+      c.dispose()
+    }
+    this.cards.clear()
   }
 
   private randomGroundPos(avoid: THREE.Vector3 | null = null): THREE.Vector3 {
     const clear = homeConfig.cardSpawnClearRadius
-    const hx = homeConfig.center.x
-    const hz = homeConfig.center.z
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0; i < 80; i++) {
       const x = (Math.random() * 2 - 1) * 16
       const z = (Math.random() * 2 - 1) * 16
-      if (Math.hypot(x - hx, z - hz) < clear) continue
-      if (isInsideHome(x, z)) continue
+      if (isInsideAnyHome(x, z)) continue
+      let nearHome = false
+      for (let s = 0; s < 4; s++) {
+        const c = getHomeSlot(s).center
+        if (Math.hypot(x - c.x, z - c.z) < clear) {
+          nearHome = true
+          break
+        }
+      }
+      if (nearHome) continue
       if (avoid && Math.hypot(x - avoid.x, z - avoid.z) < 2.5) continue
       this.tmp.set(x, 0.55, z)
       return this.tmp.clone()
     }
-    return new THREE.Vector3(6, 0.55, 6)
+    return new THREE.Vector3(0, 0.55, 0)
   }
 
   dispose(): void {
-    for (const c of this.cards) c.dispose()
-    this.cards = []
+    this.clearField()
   }
 }
 
 export function formatStackLine(stack: readonly UnoCardData[]): string {
   if (!stack.length) return '背包：空 · 去场上按 UNO 规则捡牌，送回老家'
   const top = stack[stack.length - 1]!
-  return `背包 ${stack.length} 张 · 顶牌：${cardLabel(top)} · 送回老家卸货`
+  return `背包 ${stack.length} 张 · 顶牌：${cardLabel(top)} · 送回自己的老家卸货`
 }

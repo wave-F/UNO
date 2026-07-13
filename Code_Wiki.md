@@ -2,48 +2,60 @@
 
 ## 项目基本介绍
 
-本项目是类似 **Fall Guys / 糖豆人** 的 **网页 3D 单机原型**（Phase 1）。
+本项目是类似 **Fall Guys / 糖豆人** 的 **网页 3D 原型**。
 
-当前目标：
+当前能力：
 
-- 渲染一块糖果色软垫风格场景
-- 玩家用键盘操控角色 **移动 / 跳跃**（相对镜头方向）
-- 第三人称相机：**点击画面锁定鼠标**，移动鼠标转镜头（类似糖豆人）
-- 使用物理引擎做角色与静态场景碰撞
-- 场景随机生成 **UNO 卡牌**；靠近 **自动拾取**；仅允许按 UNO 规则接到当前顶牌（背包堆叠）；不合法则屏幕提示「不能接」
-- **左下角老家**：出生点；把背上的牌运回老家区域自动卸货，累计送达张数
+- 渲染糖果色软垫风格场景
+- 玩家键盘 **移动 / 跳跃**（相对镜头）；点击锁定鼠标转镜头
+- Rapier 物理 + Kinematic Character Controller
+- 场景 **UNO 数字牌**拾取堆叠（`canStackOn`）；运回 **左下角老家**计分
+- **局域网联机（已落地）**：多房间 RoomManager、大厅准备、房主开始、位姿+权威卡牌；可单机
 
-**明确不做（Phase 1）：** 联机、大厅、淘汰、Ragdoll、飞扑 Dive、抓取、复杂后处理、真人对战出牌。
+**路线图：**
 
-工作区路径：`/Users/fengbotao/游戏设计/Uno`  
+| 阶段 | 内容 | 状态 |
+|------|------|------|
+| 单机玩法 | 移动、捡牌、卸货 | ✅ |
+| 联机 Phase 1–3 | 房间/移动/权威卡牌 | ✅ |
+| 联机 Phase 4 | **多房间 + 大厅 + 房主开始** | ✅ |
+| 后续 | 静态托管、胜负 UI 等 | ⏳ |
+
+工作区：`/Users/fengbotao/游戏设计/Uno`  
 包名：`bean-guys-prototype`
+
+联机知识笔记：https://notebooklm.google.com/notebook/b7142881-834b-438d-b046-86f9c17cded8
 
 ---
 
 ## 项目架构
 
 ```text
-浏览器
-  └── Vite + TypeScript
-        ├── three (WebGPURenderer，可降级 WebGL2)
-        ├── @dimforge/rapier3d-compat（WASM 物理 + Character Controller）
-        └── 游戏循环 Game.tick
-              ├── InputManager（按键状态）
-              ├── PlayerController（惯性/重力/跳跃 + KCC）
-              ├── CardPickupSystem（自动拾取 / 合法堆叠）
-              ├── PhysicsWorld.step
-              └── CameraFollow + render
+浏览器 (Vite + TS)
+  ├── three / Rapier / Game 循环（单机权威）
+  ├── NetClient + LobbyPanel  ──WebSocket──►  主机 Node server
+  └── shared/protocol.ts（前后端共用消息）
+
+主机 Node (tsx)
+  ├── HTTP :8787 /health
+  └── WebSocket Room（join / room_state / reconnect / rate limit）
 ```
 
-**选型理由（摘要）：**
+**联机选型（锁定）：**
 
-| 层 | 选型 | 说明 |
-|----|------|------|
-| 构建 | Vite + TS | 快速本地开发 |
-| 渲染 | `WebGPURenderer` | 对齐技术调研笔记；设备不支持时可降级 |
-| 物理 | Rapier3D | KCC、性能、未来确定性联机 |
-| 控制 | Kinematic Character Controller | 避免纯刚体控人导致的弹飞/卡角 |
-| UI 框架 | 无 React / 无 R3F | Phase 1 直连 Three，心智负担最小 |
+| 项 | 选择 |
+|----|------|
+| 拓扑 | 主机权威 Listen Server |
+| 传输 | WebSocket（JSON） |
+| 发现 | 主机 IP + 端口 8787 |
+| 协议版本 | `PROTOCOL_VERSION = 4`（多房间大厅） |
+| 房间 | `RoomManager`：创建/房间码加入；每房一房主；对局中不可加入 |
+| 位姿 | 客户端 20Hz 上报；服务器 10Hz 广播；远端插值 ~100ms |
+| 卡牌 | `server/GameSim` 刷牌/拾取/卸货；客户端仅表现 |
+| 背上牌 | 本地 `private_state`；全员 `player_stack` 驱动远端 `HeadCardDisplay` |
+| 老家 | 四角各一座（`homeSlots` 0–3）；座位 `homeIndex`；仅本家卸货 |
+| 人数 | 最多 4 |
+| 断线 | 座位保留 15s，`sessionToken` 可重连 |
 
 ---
 
@@ -51,110 +63,76 @@
 
 ```text
 Uno/
-├── index.html                 # 页面入口
-├── package.json               # 依赖与 scripts
-├── vite.config.ts             # esnext target、排除 rapier 预打包
-├── tsconfig.json
-├── Code_Wiki.md               # 本文件
-└── src/
-    ├── main.ts                # 挂载 HUD、创建并启动 Game
-    ├── style.css              # 全屏 canvas + HUD 样式
-    ├── vite-env.d.ts
-    ├── config/
-    │   └── movement.ts        # 速度/加速/跳跃/相机等可调参数
-    ├── core/
-    │   ├── Game.ts            # 场景、灯光、主循环、resize
-    │   └── Physics.ts         # Rapier init + World 封装
-    ├── managers/
-    │   └── InputManager.ts    # WASD / 方向键 / Space
-    ├── game/uno/
-    │   ├── types.ts           # 花色/点数、显示文案
-    │   ├── rules.ts           # canStackOn 合法接牌
-    │   └── deck.ts            # 随机牌池生成
-    ├── entities/
-    │   ├── Environment.ts     # 地面、障碍、边界墙 + Fixed colliders
-    │   ├── Player.ts          # 胶囊「豆」外观与转向
-    │   ├── PlayerController.ts# KCC 位移、重力、落地检测
-    │   └── CardPickup.ts      # 场景中可拾取卡牌 Mesh
-    ├── systems/
-    │   ├── CameraFollow.ts    # 第三人称 lerp 跟随
-    │   └── CardPickupSystem.ts# 刷牌、自动捡、非法提示
-    └── ui/
-        └── GameHud.ts         # 牌堆 HUD + 底部提示
+├── package.json
+├── shared/
+│   ├── protocol.ts
+│   ├── config/{cards,home}.ts
+│   └── uno/{types,rules,deck}.ts
+├── server/
+│   ├── index.ts
+│   ├── Room.ts
+│   ├── GameSim.ts           # 权威卡牌世界
+│   └── tsconfig.json
+├── src/
+│   ├── main.ts              # Game + LobbyPanel + NetClient
+│   ├── net/NetClient.ts     # WS + pose 上报
+│   ├── entities/RemotePlayer.ts
+│   ├── systems/RemotePlayerSystem.ts
+│   ├── ui/LobbyPanel.ts
+│   ├── ui/GameHud.ts
+│   ├── core/Game.ts         # attachNet + remotes
+│   └── game/uno/ …          # 规则仍仅客户端（Phase 3 上移 shared）
+└── Code_Wiki.md
 ```
-
-### 各模块说明
 
 | 文件 | 作用 |
 |------|------|
-| `main.ts` | 入口；错误时在 HUD 显示 |
-| `core/Game.ts` | `WebGPURenderer` 初始化、主循环 `tick`、灯光 |
-| `core/Physics.ts` | `RAPIER.init()`、`World`、`step()` |
-| `managers/InputManager.ts` | 缓存按键；跳跃用边沿触发 |
-| `entities/Environment.ts` | 软垫地面 + 彩色方块障碍 + 半透明边界 |
-| `entities/Player.ts` | 视觉网格（胶囊+五官）+ 后背牌堆 |
-| `entities/HeadCardDisplay.ts` | 后背叠牌展示（最外层为顶牌）与张数 |
-| `entities/HomeBase.ts` | 左下角老家平台与送达牌堆 |
-| `config/home.ts` | 老家坐标 / 范围 / 出生点 |
-| `entities/PlayerController.ts` | 读输入 → 水平速度惯性 → 重力/跳 → KCC → 同步 Mesh |
-| `systems/CameraFollow.ts` | 鼠标 yaw/pitch 轨道相机 + 跟随；提供水平前后右方向给移动 |
-| `systems/CardPickupSystem.ts` | 刷 28 张牌；范围内自动合法拾取；非法提示 |
-| `game/uno/rules.ts` | 仅数字牌：同色或同数字可接 |
-| `ui/GameHud.ts` | 顶牌与最近 8 张 chip、提示条 |
-| `config/movement.ts` | **调手感只改这里** |
+| `shared/protocol.ts` | 消息类型、pose/world_state、频率常量 |
+| `server/index.ts` | 绑定 `0.0.0.0:8787` |
+| `server/Room.ts` | 房间、限流、位姿校验、10Hz world_state |
+| `src/net/NetClient.ts` | join、tickPose、worldState 事件 |
+| `src/entities/RemotePlayer.ts` | 远端胶囊 + 名牌 + 插值 |
+| `src/systems/RemotePlayerSystem.ts` | roster 与 world_state 应用 |
+| `src/ui/LobbyPanel.ts` | 联机 UI |
 
-### UNO 拾取规则（背包堆叠）
-
-1. **只生成 4 色数字卡**（红/黄/绿/蓝 × 0–9），无跳过/反转/+2/万能。  
-2. 牌堆为空：靠近任意卡 → 自动捡入，成为顶牌。  
-3. 已有顶牌：同色 **或** 同数字 → 自动捡入并更新顶牌。  
-4. 靠近不合法卡：不捡起，底部提示「不能接」。  
-5. 离开范围后清除非法提示。
-
----
-
-## 本地运行
+### npm scripts
 
 ```bash
-cd "/Users/fengbotao/游戏设计/Uno"
-npm install
-npm run dev
+npm run dev       # 前端 Vite（--host，可被局域网打开页面）
+npm run server    # 联机房间服 :8787
+npm run build     # tsc + vite build
 ```
 
-浏览器打开终端提示的本地地址（默认 `http://localhost:5173`）。
+### 局域网怎么玩（Phase 1）
 
-```bash
-npm run build    # tsc + vite build
-npm run preview  # 预览 dist
-```
+1. **主机**终端：`npm run server`（看日志里的 `ws://192.168.x.x:8787`）  
+2. **主机**另开：`npm run dev`  
+3. 浏览器打开 Vite 地址；右上角填昵称，WS 默认 `ws://本机hostname:8787`  
+4. **其他设备**：打开 `http://主机局域网IP:5173`，WS 填 `ws://主机局域网IP:8787`，点「加入房间」  
+5. 进房后：对方移动 + **同一套场上牌**；一人捡走全员消失；得分在 HUD「联机得分」  
 
-### 操作
-
-- **移动：** `W A S D` 或方向键  
-- **跳跃：** `Space`
+防火墙放行 **5173** / **8787**。协议 v3 需重启 `npm run server`。
 
 ---
 
-## 手感调参
+## 单机玩法摘要
 
-编辑 `src/config/movement.ts`：
-
-- `maxSpeed` / `accel` / `decel`：走停惯性  
-- `airControl`：空中水平控制比例  
-- `jumpImpulse` / `gravity`：跳跃弧线  
-- `turnSpeed`：转向快慢  
-- `cameraOffset` / `cameraLerp`：镜头位置与滞后  
+- 仅数字牌四色 0–9；同色或同点可叠  
+- 老家卸货累计张数（单机默认西南角；联机四人四角）  
+- 调参：`src/config/movement.ts`、`cards.ts`、`shared/config/home.ts`
 
 ---
 
-## 对上手开发者的重要信息
+## 对上手开发者
 
-1. **物理与图形分离：** 位移由 Rapier KCC 算；Three Mesh 每帧从刚体 translation 同步。角色朝向只改 Mesh，不写进物理旋转。  
-2. **重力自管：** 世界虽有 gravity，但角色用 `verticalVel` 自算，再并入 `computeColliderMovement`。  
-3. **胶囊坐标：** Rapier capsule 的 translation 是胶囊中心；视觉 Group 原点在脚底附近，同步时要减 `halfHeight + radius`。  
-4. **Phase 1 不做：** 网络、多玩家、淘汰、Ragdoll、Dive、Grab。  
-5. **技术调研笔记：** [WebGPU+Three.js网页糖豆人](https://notebooklm.google.com/notebook/1fd51281-53f0-4529-a57e-627b68822de5)  
-6. **若改用 R3F：** 可参考社区 `ecctrl` / wawa-guys，但本仓库当前为纯 Three。
+1. 未 join：本地 `CardPickupSystem` 权威；join 后 `enterOnlineMode`。  
+2. 断线：15s 后座位移除，背包牌掉回场上。  
+3. 本地忽略自己的 world_state 位姿。  
+4. 物理与图形分离：位移 KCC，Mesh 跟 translation。  
+5. `localStorage`：session / name / ws-url。  
+6. `HomeYard` 渲染四角；`PublicPlayer.homeIndex` 绑定座位；`match_start.homes` 权威下发；开局传送本家。  
+7. 场上刷牌避开四角 `cardSpawnClearRadius`；别人家里不能捡牌也不能卸货。  
+8. 本地 `PlayerController.teleport` 排队避开 KCC 覆盖；服务器对「落在本家出生点」的位姿不做限速钳制。
 
 ---
 
@@ -162,6 +140,4 @@ npm run preview  # 预览 dist
 
 | 阶段 | 内容 |
 |------|------|
-| 1.5 | 掉落重置、简单 squash 动画、可选 Dive |
-| 2 | 动态机关、受击 stagger / 简易 Ragdoll |
-| 3 | 联机与淘汰 |
+| 4 | 一键 host 静态托管、胜负 UI、表现打磨 |

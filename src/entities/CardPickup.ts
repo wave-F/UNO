@@ -47,4 +47,4 @@ export class CardPickup {
   }
 }
 
-export const CARD_PICKUP_RADIUS = 2.0
+export { CARD_PICKUP_RADIUS } from '../../shared/config/cards'

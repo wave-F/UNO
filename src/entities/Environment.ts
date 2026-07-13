@@ -1,30 +1,12 @@
 import * as THREE from 'three'
 import type { PhysicsWorld } from '../core/Physics'
 
-type ObstacleSpec = {
-  position: [number, number, number]
-  size: [number, number, number]
-  color: number
-  rotationY?: number
-}
-
-// Keep clear of home base at (-14, -14)
-const OBSTACLES: ObstacleSpec[] = [
-  { position: [4, 0.6, -3], size: [2.4, 1.2, 2.4], color: 0xff6b9d },
-  { position: [-2, 0.4, 2], size: [3, 0.8, 1.6], color: 0x7bdff2 },
-  { position: [0, 0.9, -8], size: [4, 1.8, 1.2], color: 0xffd166 },
-  { position: [6, 1.2, -10], size: [2, 0.4, 2], color: 0x06d6a0 },
-  { position: [8, 1.8, 4], size: [2.5, 0.4, 2.5], color: 0xef476f },
-  { position: [2, 0.5, 8], size: [1.2, 1, 4], color: 0x9381ff },
-]
-
 export class Environment {
   readonly group = new THREE.Group()
 
   constructor(physics: PhysicsWorld) {
     this.group.name = 'Environment'
     this.buildGround(physics)
-    this.buildObstacles(physics)
     this.buildBoundary(physics)
   }
 
@@ -62,33 +44,6 @@ export class Environment {
       R.ColliderDesc.cuboid(size / 2, 0.1, size / 2).setTranslation(0, -0.1, 0),
       body,
     )
-  }
-
-  private buildObstacles(physics: PhysicsWorld): void {
-    const R = physics.RAPIER
-    for (const o of OBSTACLES) {
-      const [sx, sy, sz] = o.size
-      const geo = new THREE.BoxGeometry(sx, sy, sz)
-      const mat = new THREE.MeshStandardMaterial({
-        color: o.color,
-        roughness: 0.55,
-        metalness: 0.08,
-      })
-      const mesh = new THREE.Mesh(geo, mat)
-      mesh.castShadow = true
-      mesh.receiveShadow = true
-      mesh.position.set(...o.position)
-      if (o.rotationY) mesh.rotation.y = o.rotationY
-      this.group.add(mesh)
-
-      const bodyDesc = R.RigidBodyDesc.fixed().setTranslation(...o.position)
-      if (o.rotationY) {
-        const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, o.rotationY, 0))
-        bodyDesc.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w })
-      }
-      const body = physics.world.createRigidBody(bodyDesc)
-      physics.world.createCollider(R.ColliderDesc.cuboid(sx / 2, sy / 2, sz / 2), body)
-    }
   }
 
   private buildBoundary(physics: PhysicsWorld): void {

@@ -13,15 +13,18 @@ export class GameHud {
   private readonly homeEl: HTMLDivElement
   private promptTimer: number | null = null
 
+  private readonly scoresEl: HTMLDivElement
+
   constructor() {
     this.root = document.createElement('div')
     this.root.id = 'hud'
 
     this.root.innerHTML = `
       <div class="hud-title"><strong>Bean Guys · 运牌回家</strong></div>
-      <div class="hud-help">点击画面锁定鼠标 · 镜头/WASD 移动 · 捡牌后走回<strong>左下角老家</strong>自动卸货</div>
+      <div class="hud-help">点击画面锁定鼠标 · 镜头/WASD 移动 · 捡牌后走回<strong>左下角老家</strong>自动卸货 · 联机后牌以服务器为准</div>
       <div class="hud-lock" id="hud-lock">点击画面开始控制镜头</div>
       <div class="hud-home" id="hud-home">老家已送达：0 张</div>
+      <div class="hud-scores" id="hud-scores" hidden></div>
       <div class="hud-stack" id="hud-stack"></div>
       <div class="hud-chips" id="hud-chips"></div>
       <div class="hud-prompt" id="hud-prompt" hidden></div>
@@ -32,8 +35,30 @@ export class GameHud {
     this.chipsEl = this.root.querySelector('#hud-chips')!
     this.promptEl = this.root.querySelector('#hud-prompt')!
     this.homeEl = this.root.querySelector('#hud-home')!
+    this.scoresEl = this.root.querySelector('#hud-scores')!
     this.renderStack([])
     this.renderHome(0)
+  }
+
+  setScores(
+    scores: { id: string; name?: string; score: number; stackCount: number }[],
+    localId: string | null,
+  ): void {
+    if (!scores.length) {
+      this.scoresEl.hidden = true
+      this.scoresEl.innerHTML = ''
+      return
+    }
+    this.scoresEl.hidden = false
+    const lines = scores
+      .slice()
+      .sort((a, b) => b.score - a.score)
+      .map((s) => {
+        const you = s.id === localId ? ' ·你' : ''
+        const name = s.name || s.id.slice(0, 6)
+        return `${name}${you}: ${s.score}分 (背${s.stackCount})`
+      })
+    this.scoresEl.innerHTML = `<strong>联机得分</strong><br/>${lines.join('<br/>')}`
   }
 
   setPointerLocked(locked: boolean): void {
@@ -46,13 +71,17 @@ export class GameHud {
     switch (fb.type) {
       case 'picked':
         this.renderStack(fb.stack)
-        this.showPrompt(`捡到 ${cardLabel(fb.card)}`, 'ok')
+        this.showPrompt(`背上 ${cardLabel(fb.card)}`, 'ok')
         break
       case 'illegal':
-        this.showPrompt(
-          `不能接：需要接「${cardLabel(fb.top)}」，这张是「${cardLabel(fb.card)}」`,
-          'bad',
-        )
+        if (fb.reason === 'home_once') {
+          this.showPrompt('本趟已从该老家拿过 1 张，卸货后再来', 'bad')
+        } else {
+          this.showPrompt(
+            `不能接：需要接「${cardLabel(fb.top)}」，这张是「${cardLabel(fb.card)}」`,
+            'bad',
+          )
+        }
         break
       case 'clear_prompt':
         this.hidePrompt()

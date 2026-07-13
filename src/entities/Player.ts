@@ -3,22 +3,28 @@ import { movementConfig } from '../config/movement'
 import { HeadCardDisplay } from './HeadCardDisplay'
 import type { UnoCardData } from '../game/uno/types'
 
+export type PlayerVisualOptions = {
+  /** Body color (default local pink). */
+  color?: number
+  name?: string
+}
+
 /** Visual bean: capsule body + simple face + head card. */
 export class Player {
   readonly mesh: THREE.Group
   readonly headCard: HeadCardDisplay
   private bodyMesh: THREE.Mesh
 
-  constructor() {
+  constructor(opts: PlayerVisualOptions = {}) {
     this.mesh = new THREE.Group()
-    this.mesh.name = 'Player'
+    this.mesh.name = opts.name ? `Player:${opts.name}` : 'Player'
 
     const { capsuleRadius: r, capsuleHalfHeight: h } = movementConfig
     const totalHeight = h * 2 + r * 2
 
     const bodyGeo = new THREE.CapsuleGeometry(r, h * 2, 8, 16)
     const bodyMat = new THREE.MeshStandardMaterial({
-      color: 0xff8fab,
+      color: opts.color ?? 0xff8fab,
       roughness: 0.4,
       metalness: 0.05,
     })

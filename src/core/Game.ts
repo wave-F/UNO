@@ -1,15 +1,20 @@
 import * as THREE from 'three'
 import { WebGPURenderer } from 'three/webgpu'
+import { getHomeSlot, homeConfig } from '../config/home'
 import { initRapier, PhysicsWorld } from './Physics'
 import { InputManager } from '../managers/InputManager'
 import { Environment } from '../entities/Environment'
-import { HomeBase } from '../entities/HomeBase'
+import { HomeYard } from '../entities/HomeBase'
 import { PlayerController } from '../entities/PlayerController'
+import type { NetClient } from '../net/NetClient'
 import { CameraFollow } from '../systems/CameraFollow'
 import {
   CardPickupSystem,
   type PickupFeedback,
 } from '../systems/CardPickupSystem'
+import { RemotePlayerSystem } from '../systems/RemotePlayerSystem'
+import type { PublicPlayer } from '../../shared/protocol'
+import type { UnoCardData } from '../game/uno/types'
 
 export class Game {
   private renderer!: WebGPURenderer
@@ -20,12 +25,17 @@ export class Game {
   private playerCtrl!: PlayerController
   private cameraFollow!: CameraFollow
   private cardSystem!: CardPickupSystem
-  private homeBase!: HomeBase
+  private homeYard!: HomeYard
+  private remotes = new RemotePlayerSystem()
+  private net: NetClient | null = null
+  private unsubs: Array<() => void> = []
   private clock = new THREE.Clock()
   private running = false
   private container: HTMLElement
   private onPickupFeedback: (fb: PickupFeedback) => void
   private onPointerLockChange: ((locked: boolean) => void) | null = null
+  /** playerId → homeIndex (online roster). */
+  private homeByPlayer = new Map<string, number>()
 
   constructor(
     container: HTMLElement,
@@ -39,6 +49,242 @@ export class Game {
 
   setPointerLockListener(cb: (locked: boolean) => void): void {
     this.onPointerLockChange = cb
+  }
+
+  private onScores: ((scores: { id: string; name?: string; score: number; stackCount: number }[]) => void) | null =
+    null
+
+  setScoresListener(
+    cb: (scores: { id: string; name?: string; score: number; stackCount: number }[]) => void,
+  ): void {
+    this.onScores = cb
+  }
+
+  private matchLive = false
+
+  /** Wire LAN client (optional). Offline still works without this. */
+  attachNet(net: NetClient): void {
+    this.detachNet()
+    this.net = net
+    this.unsubs.push(
+      net.on('welcome', (info) => {
+        this.remotes.setLocalPlayerId(info.playerId)
+        this.remotes.syncRoster(info.players)
+        this.applyRosterHomes(info.players, info.playerId)
+        // Always switch off local authority while in a network room
+        this.cardSystem.enterOnlineMode()
+        this.playerCtrl.player.setHeldStack([])
+        this.remotes.clearAllStacks()
+        this.homeYard.clearAllPiles()
+        this.onScores?.([])
+
+        if (info.phase === 'playing') {
+          this.beginMatch(
+            info.groundCards,
+            info.yourStack,
+            info.yourScore,
+            info.scores,
+            /*teleportHome*/ true,
+          )
+          this.remotes.applyPlayerStacks(info.playerStacks ?? [])
+        } else {
+          this.matchLive = false
+          // Lobby: still stand at your corner
+          this.teleportLocalToHome()
+        }
+      }),
+      net.on('roomState', (info) => {
+        if (net.playerId) this.remotes.setLocalPlayerId(net.playerId)
+        this.remotes.syncRoster(info.players)
+        this.applyRosterHomes(info.players, net.playerId)
+      }),
+      net.on('matchStart', (ground, scores, homes) => {
+        this.remotes.clearAllStacks()
+        this.homeYard.clearAllPiles()
+        // Authoritative homes from match_start (do not trust only lobby roster)
+        if (homes.length) {
+          this.applyHomesList(homes, net.playerId, net.players)
+        } else if (net.players.length) {
+          this.applyRosterHomes(net.players, net.playerId)
+        }
+        this.beginMatch(ground, [], 0, scores, true)
+      }),
+      net.on('worldState', (_t, poses) => {
+        if (!this.matchLive) return
+        this.remotes.applyWorldState(poses)
+      }),
+      net.on('cardsSpawned', (cards) => {
+        if (!this.matchLive) return
+        this.cardSystem.applySpawned(cards)
+      }),
+      net.on('cardPicked', (info) => {
+        if (!this.matchLive) return
+        this.cardSystem.applyCardRemoved(info.cardId)
+      }),
+      net.on('cardIllegal', (card, top, reason) => {
+        this.cardSystem.notifyIllegal(card, top, reason)
+      }),
+      net.on('clearIllegal', () => {
+        this.cardSystem.notifyClearIllegal()
+      }),
+      net.on('privateState', (stack, score) => {
+        if (!this.matchLive) return
+        this.cardSystem.applyPrivateStack(stack, score)
+        this.playerCtrl.player.setHeldStack(stack)
+        if (stack.length === 0) {
+          this.onPickupFeedback({
+            type: 'deposited',
+            cards: [],
+            deliveredTotal: score,
+          })
+        } else {
+          const top = stack[stack.length - 1]!
+          this.onPickupFeedback({ type: 'picked', card: top, stack })
+        }
+      }),
+      net.on('playerStack', (playerId, stack) => {
+        if (!this.matchLive) return
+        this.remotes.setPlayerStack(playerId, stack)
+      }),
+      net.on('homeStolen', (info) => {
+        if (!this.matchLive) return
+        // Visual: remove top of victim home pile (thief backpack via private_state)
+        this.homeYard.popTopFrom(info.victimHomeIndex)
+      }),
+      net.on('deposited', (info) => {
+        if (!this.matchLive) return
+        const slot = this.homeByPlayer.get(info.playerId) ?? homeConfig.defaultSlot
+        if (info.playerId === net.playerId) {
+          this.cardSystem.notifyDepositedCards(info.cards, info.score)
+          this.playerCtrl.player.setHeldStack([])
+        } else {
+          // Other player's home pile + clear backpack visual
+          this.homeYard.depositTo(slot, info.cards)
+          this.remotes.setPlayerStack(info.playerId, [])
+        }
+      }),
+      net.on('scores', (scores) => {
+        this.onScores?.(scores)
+      }),
+      net.on('status', (status) => {
+        if (status === 'disconnected' || status === 'error') {
+          this.matchLive = false
+          this.remotes.clear()
+          this.homeByPlayer.clear()
+          if (this.cardSystem.isOnline()) {
+            this.cardSystem.enterOfflineMode()
+            this.cardSystem.setHomeIndex(homeConfig.defaultSlot)
+            this.playerCtrl.player.setHeldStack([])
+            this.homeYard.clearAllPiles()
+            this.applyOfflineHomeLabels()
+            this.teleportLocalToHome()
+          }
+          this.onScores?.([])
+        }
+      }),
+    )
+  }
+
+  private beginMatch(
+    ground: { card: UnoCardData; x: number; y: number; z: number }[],
+    stack: UnoCardData[],
+    score: number,
+    scores: { id: string; name?: string; score: number; stackCount: number }[],
+    teleportHome: boolean,
+  ): void {
+    this.matchLive = true
+    if (!this.cardSystem.isOnline()) this.cardSystem.enterOnlineMode()
+    if (teleportHome) this.teleportLocalToHome()
+    this.cardSystem.applyGroundSnapshot(ground)
+    this.cardSystem.applyPrivateStack(stack, score)
+    this.playerCtrl.player.setHeldStack(stack)
+    if (stack.length) {
+      const top = stack[stack.length - 1]!
+      this.onPickupFeedback({ type: 'picked', card: top, stack })
+    } else {
+      this.onPickupFeedback({ type: 'deposited', cards: [], deliveredTotal: score })
+    }
+    this.onScores?.(scores)
+  }
+
+  private applyRosterHomes(
+    players: readonly PublicPlayer[],
+    localId: string | null,
+  ): void {
+    this.homeByPlayer.clear()
+    const owners = new Map<string, { homeIndex: number; name: string }>()
+    for (const p of players) {
+      const hi =
+        typeof p.homeIndex === 'number' && Number.isFinite(p.homeIndex)
+          ? p.homeIndex
+          : 0
+      this.homeByPlayer.set(p.id, hi)
+      owners.set(p.id, { homeIndex: hi, name: p.name })
+    }
+    this.finishHomeOwnership(localId, owners)
+  }
+
+  /** From match_start.homes — preferred over lobby-only state. */
+  private applyHomesList(
+    homes: readonly { playerId: string; homeIndex: number }[],
+    localId: string | null,
+    players: readonly PublicPlayer[],
+  ): void {
+    this.homeByPlayer.clear()
+    const nameById = new Map(players.map((p) => [p.id, p.name] as const))
+    const owners = new Map<string, { homeIndex: number; name: string }>()
+    for (const h of homes) {
+      const hi =
+        typeof h.homeIndex === 'number' && Number.isFinite(h.homeIndex)
+          ? h.homeIndex
+          : 0
+      this.homeByPlayer.set(h.playerId, hi)
+      owners.set(h.playerId, {
+        homeIndex: hi,
+        name: nameById.get(h.playerId) ?? h.playerId.slice(0, 6),
+      })
+    }
+    this.finishHomeOwnership(localId, owners)
+  }
+
+  private finishHomeOwnership(
+    localId: string | null,
+    owners: Map<string, { homeIndex: number; name: string }>,
+  ): void {
+    let localHome: number = homeConfig.defaultSlot
+    if (localId && this.homeByPlayer.has(localId)) {
+      localHome = this.homeByPlayer.get(localId)!
+    }
+    this.cardSystem.setHomeIndex(localHome)
+    this.homeYard.applyOwnership({
+      localHomeIndex: localHome,
+      owners,
+      localPlayerId: localId,
+    })
+  }
+
+  private applyOfflineHomeLabels(): void {
+    this.homeYard.applyOwnership({
+      localHomeIndex: homeConfig.defaultSlot,
+      owners: new Map(),
+      localPlayerId: null,
+    })
+  }
+
+  private teleportLocalToHome(): void {
+    const slot = this.cardSystem?.getHomeIndex?.() ?? homeConfig.defaultSlot
+    const sp = getHomeSlot(slot).spawn
+    this.playerCtrl.teleport(sp.x, sp.y, sp.z, 0)
+    this.cameraFollow.snapTo(this.playerCtrl.getPosition())
+  }
+
+  private detachNet(): void {
+    for (const u of this.unsubs) u()
+    this.unsubs = []
+    this.net = null
+    this.matchLive = false
+    this.remotes.clear()
+    this.homeByPlayer.clear()
   }
 
   async init(): Promise<void> {
@@ -60,8 +306,9 @@ export class Game {
     const env = new Environment(this.physics)
     this.scene.add(env.group)
 
-    this.homeBase = new HomeBase()
-    this.scene.add(this.homeBase.group)
+    this.homeYard = new HomeYard()
+    this.scene.add(this.homeYard.group)
+    this.applyOfflineHomeLabels()
 
     this.cameraFollow = new CameraFollow(this.camera, this.input)
     this.playerCtrl = new PlayerController(this.physics, this.input, this.cameraFollow)
@@ -76,9 +323,10 @@ export class Game {
         }
         this.onPickupFeedback(fb)
       },
-      (cards) => this.homeBase.deposit(cards),
+      (cards) => this.homeYard.depositTo(this.cardSystem.getHomeIndex(), cards),
     )
     this.scene.add(this.cardSystem.group)
+    this.scene.add(this.remotes.group)
 
     this.cameraFollow.snapTo(this.playerCtrl.getPosition())
 
@@ -100,11 +348,13 @@ export class Game {
 
   dispose(): void {
     this.stop()
+    this.detachNet()
     window.removeEventListener('resize', this.onResize)
     document.removeEventListener('pointerlockchange', this.handlePointerLock)
     this.input.dispose()
     this.cardSystem?.dispose()
-    this.homeBase?.dispose()
+    this.homeYard?.dispose()
+    this.remotes.dispose()
     this.physics.dispose()
     this.renderer.dispose()
     this.renderer.domElement.remove()
@@ -141,6 +391,16 @@ export class Game {
     const pos = this.playerCtrl.getPosition()
     this.cameraFollow.updatePosition(pos, dt)
     this.cardSystem.update(pos, dt)
+    this.remotes.update(dt)
+
+    if (this.net?.isPlaying) {
+      this.net.tickPose(dt, {
+        x: pos.x,
+        y: pos.y,
+        z: pos.z,
+        yaw: this.playerCtrl.getYaw(),
+      })
+    }
 
     void this.renderer.render(this.scene, this.camera)
   }

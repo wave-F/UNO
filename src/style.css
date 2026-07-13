@@ -67,6 +67,16 @@ canvas {
   display: inline-block;
 }
 
+.hud-scores {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(30, 58, 138, 0.82);
+  font-size: 12px;
+  line-height: 1.45;
+  display: inline-block;
+}
+
 .hud-stack {
   margin-top: 8px;
   font-weight: 600;
@@ -118,4 +128,240 @@ canvas {
 .hud-prompt.bad {
   background: rgba(239, 68, 68, 0.94);
   color: #fff;
+}
+
+/* LAN lobby — full-screen until match / offline */
+#lobby {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  user-select: none;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  color: #e2e8f0;
+  background: rgba(15, 23, 42, 0.72);
+  backdrop-filter: blur(6px);
+}
+
+#lobby[hidden] {
+  display: none !important;
+}
+
+.lobby-card {
+  background: rgba(15, 23, 42, 0.94);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 12px;
+  padding: 12px 14px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  width: min(360px, calc(100vw - 32px));
+}
+
+.lobby-card-lg {
+  padding: 16px 18px;
+}
+
+.lobby-room-meta {
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fde68a;
+}
+
+.lobby-advanced {
+  margin: 8px 0 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  padding: 6px 10px;
+  background: rgba(2, 6, 23, 0.35);
+}
+
+.lobby-advanced summary {
+  cursor: pointer;
+  font-size: 12px;
+  opacity: 0.85;
+  user-select: none;
+}
+
+.lobby-advanced[open] summary {
+  margin-bottom: 8px;
+}
+
+.lobby-advanced-hint {
+  font-size: 11px;
+  opacity: 0.7;
+  line-height: 1.35;
+  margin-top: 4px;
+}
+
+.lobby-code-block {
+  margin: 10px 0 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(30, 58, 138, 0.55);
+  border: 1px solid rgba(147, 197, 253, 0.35);
+  text-align: center;
+}
+
+.lobby-code-label {
+  font-size: 11px;
+  opacity: 0.85;
+  margin-bottom: 4px;
+}
+
+.lobby-code-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.lobby-code-big {
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: 0.2em;
+  color: #fde68a;
+  font-variant-numeric: tabular-nums;
+}
+
+.lobby-copy {
+  flex: 0 0 auto !important;
+  padding: 6px 12px !important;
+}
+
+.lobby-title {
+  font-weight: 800;
+  font-size: 15px;
+  margin-bottom: 6px;
+  color: #fff;
+}
+
+.lobby-ver {
+  font-weight: 600;
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+.lobby-hint {
+  opacity: 0.85;
+  line-height: 1.4;
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+
+.lobby-hint code {
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.1);
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+
+.lobby-label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 12px;
+  opacity: 0.9;
+}
+
+.lobby-label input {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  background: rgba(2, 6, 23, 0.65);
+  color: #f8fafc;
+  font-size: 13px;
+}
+
+.lobby-actions {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.lobby-actions button {
+  flex: 1;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: none;
+  font-weight: 700;
+  cursor: pointer;
+  background: #22c55e;
+  color: #052e16;
+}
+
+.lobby-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.lobby-actions button.ghost {
+  background: rgba(148, 163, 184, 0.25);
+  color: #e2e8f0;
+}
+
+.lobby-actions button.lobby-quick {
+  background: #f59e0b;
+  color: #422006;
+  flex: 1 1 100%;
+}
+
+.lobby-quick-hint {
+  font-size: 11px;
+  opacity: 0.8;
+  line-height: 1.35;
+  margin: 0 0 8px;
+  color: #fde68a;
+}
+
+.lobby-status {
+  margin-top: 4px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(30, 41, 59, 0.9);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.lobby-status[data-kind='ok'] {
+  background: rgba(22, 101, 52, 0.75);
+}
+
+.lobby-status[data-kind='bad'] {
+  background: rgba(153, 27, 27, 0.8);
+}
+
+.lobby-rtt {
+  margin-top: 4px;
+  font-size: 11px;
+  opacity: 0.75;
+  min-height: 1em;
+}
+
+.lobby-players-title {
+  margin-top: 10px;
+  font-weight: 700;
+  font-size: 12px;
+  opacity: 0.9;
+}
+
+.lobby-players {
+  list-style: none;
+  margin-top: 4px;
+  max-height: 120px;
+  overflow: auto;
+}
+
+.lobby-players li {
+  padding: 3px 0;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+}
+
+.lobby-players li.muted {
+  opacity: 0.55;
 }

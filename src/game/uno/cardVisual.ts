@@ -65,10 +65,16 @@ function roundRect(
   ctx.closePath()
 }
 
-/** Upright card mesh; both faces show the card. Caller owns dispose. */
+/**
+ * Upright card mesh; both faces show the card. Caller owns dispose.
+ * @param scale Uniform face size (W/H).
+ * @param depthScale Optional thickness scale; defaults to `scale`.
+ *   Use a smaller depthScale for large display piles so cards don't look like bricks.
+ */
 export function createCardMesh(
   card: UnoCardData,
   scale = 1,
+  depthScale = scale,
 ): { mesh: THREE.Mesh; texture: THREE.CanvasTexture } {
   const texture = makeFaceTexture(card)
   const faceMat = new THREE.MeshStandardMaterial({
@@ -85,7 +91,11 @@ export function createCardMesh(
     color: 0xf8fafc,
     roughness: 0.6,
   })
-  const geo = new THREE.BoxGeometry(CARD_W * scale, CARD_H * scale, CARD_D * scale)
+  const geo = new THREE.BoxGeometry(
+    CARD_W * scale,
+    CARD_H * scale,
+    CARD_D * depthScale,
+  )
   const mesh = new THREE.Mesh(geo, [
     edgeMat,
     edgeMat,

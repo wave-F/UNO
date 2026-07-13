@@ -18,6 +18,9 @@ export class PlayerController {
   private readonly flatForward = new THREE.Vector3()
   private readonly flatRight = new THREE.Vector3()
   private readonly wishDir = new THREE.Vector3()
+  /** Applied at start of update so KCC cannot overwrite the same frame. */
+  private pendingTeleport: { x: number; y: number; z: number; yaw: number } | null =
+    null
 
   constructor(
     physics: PhysicsWorld,
@@ -51,6 +54,20 @@ export class PlayerController {
   }
 
   update(dt: number): void {
+    if (this.pendingTeleport) {
+      const p = this.pendingTeleport
+      this.pendingTeleport = null
+      this.verticalVel = 0
+      this.horizVel.set(0, 0, 0)
+      this.body.setTranslation({ x: p.x, y: p.y, z: p.z }, true)
+      this.body.setNextKinematicTranslation({ x: p.x, y: p.y, z: p.z })
+      this.player.mesh.rotation.y = p.yaw
+      this.grounded = false
+      this.syncMesh()
+      this.player.updateVisuals(dt)
+      return
+    }
+
     const move = this.input.getMoveVector()
     // Camera-relative: W 沿镜头水平朝向，A/D 沿水平右方向
     this.cameraFollow.getFlatForward(this.flatForward)
@@ -129,6 +146,26 @@ export class PlayerController {
   getPosition(): THREE.Vector3 {
     const t = this.body.translation()
     return new THREE.Vector3(t.x, t.y, t.z)
+  }
+
+  /**
+   * Snap body + mesh (match start / own home spawn).
+   * Queued until next update so character controller cannot stomp it.
+   */
+  teleport(x: number, y: number, z: number, yaw = 0): void {
+    this.verticalVel = 0
+    this.horizVel.set(0, 0, 0)
+    this.pendingTeleport = { x, y, z, yaw }
+    // Immediate visual + getPosition so net pose / camera see new home same frame
+    this.body.setTranslation({ x, y, z }, true)
+    this.body.setNextKinematicTranslation({ x, y, z })
+    this.player.mesh.rotation.y = yaw
+    this.syncMesh()
+  }
+
+  /** Horizontal facing (mesh yaw). */
+  getYaw(): number {
+    return this.player.mesh.rotation.y
   }
 
   private syncMesh(): void {

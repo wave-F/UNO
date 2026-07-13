@@ -7,7 +7,8 @@ import {
 import type { UnoCardData } from '../game/uno/types'
 import { movementConfig } from '../config/movement'
 
-const CARD_SCALE = 0.78
+/** Backpack card face scale (was 0.78; ×1.2 for readability). */
+const CARD_SCALE = 0.78 * 1.2
 /** Spacing along the spine as cards stack (slightly > scaled thickness). */
 const STACK_STEP = CARD_D * CARD_SCALE + 0.018
 
