@@ -1,5 +1,6 @@
 import type { WebSocket } from 'ws'
 import {
+  DEV_QUICK_ROOM_CODE,
   MAX_ROOMS,
   PROTOCOL_VERSION,
   type ClientMessage,
@@ -238,27 +239,79 @@ export class RoomManager {
       return
     }
 
+    const isDevQuick = code === DEV_QUICK_ROOM_CODE
     const existing = this.rooms.get(code)
+
     if (existing) {
       if (existing.phase === 'playing') {
         const live = existing.listPlayers().some((p) => p.connected)
-        if (live) {
+        if (!live) {
+          this.forceDeleteRoom(code)
+        } else if (isDevQuick) {
+          // Dev: allow second browser to join mid-match (first already auto-started)
+          this.detachFromRoom(ws)
+          const result = existing.tryAddPlayer(ws, name, { allowDuringPlay: true })
+          if ('error' in result) {
+            send(ws, result.error)
+            return
+          }
+          const seat = result
+          existing.admitToRunningMatch(seat.id)
+          this.bind(ws, existing, seat)
+          existing.sendWelcome(ws, seat)
+          existing.broadcast(
+            {
+              type: 'player_joined',
+              player: {
+                id: seat.id,
+                name: seat.name,
+                connected: true,
+                ready: true,
+                isHost: seat.id === existing.hostId,
+                homeIndex: seat.homeIndex,
+              },
+            },
+            seat.id,
+          )
+          existing.broadcastRoomState()
+          return
+        } else {
           send(ws, {
             type: 'error',
             code: 'room_playing',
-            message: `测试房 ${code} 对局中，请双方先点离开房间再测`,
+            message: `房间 ${code} 对局中，无法加入`,
           })
           return
         }
-        // Stale playing room with no live sockets — wipe for next test
-        this.forceDeleteRoom(code)
       } else {
-        this.joinRoom(ws, {
-          type: 'join_room',
-          roomCode: code,
-          name,
-          protocolVersion: msg.protocolVersion,
-        })
+        // Lobby: join then auto-start for dev quick room
+        this.detachFromRoom(ws)
+        const result = existing.tryAddPlayer(ws, name)
+        if ('error' in result) {
+          send(ws, result.error)
+          return
+        }
+        const seat = result
+        this.bind(ws, existing, seat)
+        existing.sendWelcome(ws, seat)
+        existing.broadcast(
+          {
+            type: 'player_joined',
+            player: {
+              id: seat.id,
+              name: seat.name,
+              connected: true,
+              ready: true,
+              isHost: false,
+              homeIndex: seat.homeIndex,
+            },
+          },
+          seat.id,
+        )
+        existing.broadcastRoomState()
+        if (isDevQuick) {
+          existing.forceStartMatch()
+        }
         return
       }
     }
@@ -281,6 +334,10 @@ export class RoomManager {
     this.bind(ws, room, seat)
     room.sendWelcome(ws, seat)
     room.broadcastRoomState()
+    // Dev quick room: first client auto-starts (no 「开始游戏」)
+    if (isDevQuick) {
+      room.forceStartMatch()
+    }
   }
 
   private setReady(ws: WebSocket, ready: boolean): void {

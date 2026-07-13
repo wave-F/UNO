@@ -20,7 +20,7 @@ export class GameHud {
     this.root.id = 'hud'
 
     this.root.innerHTML = `
-      <div class="hud-title"><strong>Bean Guys · 运牌回家</strong></div>
+      <div class="hud-title"><strong>UNO Guys · 运牌回家</strong></div>
       <div class="hud-help">点击画面锁定鼠标 · 镜头/WASD 移动 · 捡牌后走回<strong>左下角老家</strong>自动卸货 · 联机后牌以服务器为准</div>
       <div class="hud-lock" id="hud-lock">点击画面开始控制镜头</div>
       <div class="hud-home" id="hud-home">老家已送达：0 张</div>

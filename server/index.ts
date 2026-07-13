@@ -17,7 +17,7 @@ const server = http.createServer((req, res) => {
     res.end(
       JSON.stringify({
         ok: true,
-        service: 'bean-guys-lan',
+        service: 'uno-guys-lan',
         protocolVersion: PROTOCOL_VERSION,
         rooms: manager.listSummary(),
         hint: 'WS: create_room | join_room { roomCode }',

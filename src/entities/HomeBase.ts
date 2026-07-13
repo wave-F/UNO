@@ -9,7 +9,11 @@ import {
   createCardMesh,
   disposeCardMesh,
 } from '../game/uno/cardVisual'
-import type { UnoCardData } from '../game/uno/types'
+import {
+  cardLabel,
+  UNO_COLOR_CSS,
+  type UnoCardData,
+} from '../game/uno/types'
 
 /** Home deposit pile: 10× original face size (was 0.42). */
 const PILE_SCALE = 0.42 * 10
@@ -44,6 +48,10 @@ export class HomeBase {
   private readonly labelCtx: CanvasRenderingContext2D
   private readonly mineRing: THREE.Mesh
   private readonly slot: HomeSlotDef
+  /** Local player's home — ring + fixed title. */
+  private isMine = false
+  /** Someone is assigned to this corner (online). */
+  private hasOwner = false
 
   constructor(opts: HomeBaseOptions = {}) {
     this.slotIndex = opts.slotIndex ?? homeConfig.defaultSlot
@@ -143,32 +151,26 @@ export class HomeBase {
     this.labelSprite.position.set(0, 3.4, 0)
     this.group.add(this.labelSprite)
 
-    this.setTitle(opts.title ?? `老家 · ${this.slot.cornerName}`)
+    this.refreshBubble()
 
     this.pileRoot.position.set(0, 0.3, 0)
     this.group.add(this.pileRoot)
   }
 
   setMine(isMine: boolean): void {
+    this.isMine = isMine
     this.mineRing.visible = isMine
+    this.refreshBubble()
   }
 
-  setTitle(title: string): void {
-    const ctx = this.labelCtx
-    const w = this.labelCanvas.width
-    const h = this.labelCanvas.height
-    ctx.clearRect(0, 0, w, h)
-    ctx.fillStyle = 'rgba(15,23,42,0.85)'
-    ctx.beginPath()
-    ctx.roundRect(8, 12, w - 16, h - 24, 16)
-    ctx.fill()
-    ctx.fillStyle = '#fde68a'
-    ctx.font = 'bold 30px system-ui, sans-serif'
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
-    const text = title.length > 14 ? `${title.slice(0, 13)}…` : title
-    ctx.fillText(text, w / 2, h / 2)
-    this.labelTex.needsUpdate = true
+  setHasOwner(hasOwner: boolean): void {
+    this.hasOwner = hasOwner
+    this.refreshBubble()
+  }
+
+  getTopCard(): UnoCardData | null {
+    if (!this.deposited.length) return null
+    return this.deposited[this.deposited.length - 1]!
   }
 
   getDepositedCount(): number {
@@ -180,12 +182,14 @@ export class HomeBase {
     if (!cards.length) return this.deposited.length
     this.deposited.push(...cards)
     this.rebuildVisiblePile()
+    this.refreshBubble()
     return this.deposited.length
   }
 
   clearPile(): void {
     this.deposited = []
     this.clearPileMeshes()
+    this.refreshBubble()
   }
 
   /** Remove top card from pile (stolen by another player). */
@@ -193,7 +197,53 @@ export class HomeBase {
     if (!this.deposited.length) return null
     const card = this.deposited.pop()!
     this.rebuildVisiblePile()
+    this.refreshBubble()
     return card
+  }
+
+  /**
+   * Bubble above home:
+   * - yours: 「你的老家」
+   * - others: top card only e.g. 「红4」（空则隐藏）
+   * - empty slot: hidden
+   */
+  refreshBubble(): void {
+    if (this.isMine) {
+      this.paintBubble('你的老家', '#fde68a')
+      this.labelSprite.visible = true
+      return
+    }
+    if (!this.hasOwner) {
+      this.labelSprite.visible = false
+      return
+    }
+    const top = this.getTopCard()
+    if (!top) {
+      this.labelSprite.visible = false
+      return
+    }
+    // 「红 4」→「红4」
+    const text = cardLabel(top).replace(/\s+/g, '')
+    this.paintBubble(text, UNO_COLOR_CSS[top.color] ?? '#fde68a')
+    this.labelSprite.visible = true
+  }
+
+  private paintBubble(title: string, fillCss: string): void {
+    const ctx = this.labelCtx
+    const w = this.labelCanvas.width
+    const h = this.labelCanvas.height
+    ctx.clearRect(0, 0, w, h)
+    ctx.fillStyle = 'rgba(15,23,42,0.85)'
+    ctx.beginPath()
+    ctx.roundRect(8, 12, w - 16, h - 24, 16)
+    ctx.fill()
+    ctx.fillStyle = fillCss
+    ctx.font = 'bold 36px system-ui, sans-serif'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    const text = title.length > 10 ? `${title.slice(0, 9)}…` : title
+    ctx.fillText(text, w / 2, h / 2)
+    this.labelTex.needsUpdate = true
   }
 
   dispose(): void {
@@ -292,20 +342,17 @@ export class HomeYard {
 
     for (const home of this.homes) {
       const owner = bySlot.get(home.slotIndex)
-      const corner = getHomeSlot(home.slotIndex).cornerName
       if (owner?.isMine) {
+        home.setHasOwner(true)
         home.setMine(true)
-        home.setTitle(`你的老家 · ${corner}`)
       } else if (owner) {
         home.setMine(false)
-        home.setTitle(`${owner.name} · ${corner}`)
+        home.setHasOwner(true)
       } else {
-        home.setMine(home.slotIndex === opts.localHomeIndex && !opts.localPlayerId)
-        home.setTitle(
+        const offlineMine =
           home.slotIndex === opts.localHomeIndex && !opts.localPlayerId
-            ? `你的老家 · ${corner}`
-            : `空位 · ${corner}`,
-        )
+        home.setMine(offlineMine)
+        home.setHasOwner(offlineMine)
       }
     }
   }

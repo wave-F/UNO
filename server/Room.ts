@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import type { WebSocket } from 'ws'
 import {
+  DEV_QUICK_ROOM_CODE,
   MAX_PLAYERS,
   MAX_POSE_SPEED,
   PROTOCOL_VERSION,
@@ -154,8 +155,14 @@ export class Room {
     return this.addSeat(ws, name, true)
   }
 
-  tryAddPlayer(ws: WebSocket, name: string): Seat | { error: ServerMessage } {
-    if (this.phase === 'playing') {
+  tryAddPlayer(
+    ws: WebSocket,
+    name: string,
+    opts?: { allowDuringPlay?: boolean },
+  ): Seat | { error: ServerMessage } {
+    const allowDuringPlay =
+      opts?.allowDuringPlay === true || this.code === DEV_QUICK_ROOM_CODE
+    if (this.phase === 'playing' && !allowDuringPlay) {
       return {
         error: {
           type: 'error',
@@ -174,6 +181,27 @@ export class Room {
       }
     }
     return this.addSeat(ws, name, false)
+  }
+
+  /**
+   * Late-join into an already running match (dev quick room).
+   * Registers player in GameSim and places them at home spawn.
+   */
+  admitToRunningMatch(seatId: string): void {
+    if (this.phase !== 'playing') return
+    const seat = this.seats.get(seatId)
+    if (!seat) return
+    this.game.addPlayer(seat.id, seat.homeIndex)
+    const sp = getHomeSlot(seat.homeIndex).spawn
+    seat.pose = { x: sp.x, y: sp.y, z: sp.z, yaw: 0, seq: 0 }
+    seat.lastPoseAt = 0
+    this.ensureTick()
+  }
+
+  /** Auto-start without host check (used by local dual-client test room). */
+  forceStartMatch(): { ok: true } | { error: ServerMessage } {
+    if (this.phase === 'playing') return { ok: true }
+    return this.startGame(this.hostId, { skipHostCheck: true })
   }
 
   reconnectSeat(seat: Seat, ws: WebSocket, name: string): void {
@@ -222,13 +250,16 @@ export class Room {
     this.broadcastRoomState()
   }
 
-  startGame(hostSeatId: string): { ok: true } | { error: ServerMessage } {
+  startGame(
+    hostSeatId: string,
+    opts?: { skipHostCheck?: boolean },
+  ): { ok: true } | { error: ServerMessage } {
     if (this.phase !== 'lobby') {
       return {
         error: { type: 'error', code: 'bad_message', message: '已在对局中' },
       }
     }
-    if (hostSeatId !== this.hostId) {
+    if (!opts?.skipHostCheck && hostSeatId !== this.hostId) {
       return {
         error: { type: 'error', code: 'not_host', message: '只有房主可以开始游戏' },
       }
@@ -239,7 +270,6 @@ export class Room {
         error: { type: 'error', code: 'not_ready', message: '至少需要 1 名玩家' },
       }
     }
-    // No ready gate: host can start as soon as anyone is in the room (including alone).
 
     this.phase = 'playing'
     this.game.resetMatch()

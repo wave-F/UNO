@@ -1,4 +1,4 @@
-# Code_Wiki — Bean Guys（糖豆人网页原型）
+# Code_Wiki — UNO Guys（糖豆人式 UNO 网页原型）
 
 ## 项目基本介绍
 
@@ -22,7 +22,7 @@
 | 后续 | 静态托管、胜负 UI 等 | ⏳ |
 
 工作区：`/Users/fengbotao/游戏设计/Uno`  
-包名：`bean-guys-prototype`
+包名：`uno-guys`
 
 联机知识笔记：https://notebooklm.google.com/notebook/b7142881-834b-438d-b046-86f9c17cded8
 

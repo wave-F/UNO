@@ -43,7 +43,7 @@ export class LobbyPanel {
     this.root.id = 'lobby'
     this.root.innerHTML = `
       <div class="lobby-card lobby-card-lg">
-        <div class="lobby-title">Bean Guys · 大厅 <span class="lobby-ver">v${PROTOCOL_VERSION}</span></div>
+        <div class="lobby-title">UNO Guys · 大厅 <span class="lobby-ver">v${PROTOCOL_VERSION}</span></div>
         <p class="lobby-hint">
           主机电脑运行 <code>npm run server</code>，其他人用浏览器打开<strong>同一台电脑的页面地址</strong>。
           创建房间后告诉大家<strong>房间码</strong>即可。最多 ${MAX_PLAYERS} 人/房。
@@ -64,12 +64,12 @@ export class LobbyPanel {
         </details>
 
         <div class="lobby-actions" id="lobby-actions-entry">
-          <button type="button" id="lobby-quick" class="lobby-quick">本地双开测试</button>
+          <button type="button" id="lobby-quick" class="lobby-quick">本地双开测试（一点即玩）</button>
           <button type="button" id="lobby-create">创建房间</button>
           <button type="button" id="lobby-join">加入房间</button>
           <button type="button" id="lobby-offline" class="ghost">单机游玩</button>
         </div>
-        <p class="lobby-quick-hint">开发用：两浏览器都点「本地双开测试」进固定房 ${DEV_QUICK_ROOM_CODE}，免填房号。第 1 个是房主。</p>
+        <p class="lobby-quick-hint">开发用：两浏览器都点「本地双开测试」→ 自动进房 ${DEV_QUICK_ROOM_CODE} 并自动开局，不用填房号、不用点开始。</p>
 
         <div id="lobby-code-block" class="lobby-code-block" hidden>
           <div class="lobby-code-label">房间码（发给同伴）</div>
