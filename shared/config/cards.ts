@@ -1,12 +1,12 @@
 /** World card spawn / density (client + server). */
 export const cardSpawnConfig = {
-  /** Cards on field when match starts (includes more stun bats for testing). */
-  initialCount: 8,
-  maxOnField: 16,
+  /** Cards on field when match starts (mostly numbers; items at normal rates). */
+  initialCount: 10,
+  maxOnField: 18,
   /** Seconds between spawn waves. */
-  spawnIntervalSec: 3.5,
+  spawnIntervalSec: 4,
   /** Cards per wave. */
-  spawnPerWave: 3,
+  spawnPerWave: 2,
 } as const
 
 /** Horizontal pickup radius (meters, XZ). */

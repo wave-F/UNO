@@ -71,7 +71,7 @@ export class LobbyPanel {
           <button type="button" id="lobby-join">加入房间</button>
           <button type="button" id="lobby-offline" class="ghost">单机游玩</button>
         </div>
-        <p class="lobby-quick-hint">开发用：点「本地双开测试」→ 房 ${DEV_QUICK_ROOM_CODE} 自动开局并加 1 个机器人；也可用「加机器人」单人测。</p>
+        <p class="lobby-quick-hint">开发用：点「本地双开测试」→ 房 ${DEV_QUICK_ROOM_CODE} 自动开局并加 <strong>3 个机器人</strong>；也可用「加/减机器人」手动调。</p>
 
         <div id="lobby-code-block" class="lobby-code-block" hidden>
           <div class="lobby-code-label">房间码（发给同伴）</div>

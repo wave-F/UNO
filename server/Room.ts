@@ -150,6 +150,20 @@ export class Room {
       onAttackMiss: (attackerId) => {
         this.sendTo(attackerId, { type: 'attack_miss', attackerId })
       },
+      onTrapPlaced: (trap) => {
+        this.broadcast({ type: 'trap_placed', trap })
+      },
+      onTrapRemoved: (trapId, reason) => {
+        this.broadcast({ type: 'trap_removed', trapId, reason })
+      },
+      onTrapTriggered: (info) => {
+        this.broadcast({
+          type: 'trap_triggered',
+          trapId: info.trapId,
+          ownerId: info.ownerId,
+          victimId: info.victimId,
+        })
+      },
       onGroundSnapshot: (cards) => {
         this.broadcast({
           type: 'ground_snapshot',
@@ -348,6 +362,7 @@ export class Room {
       yourItem: playing && st ? st.item : null,
       scores: playing ? this.enrichScores(this.game.getScores()) : [],
       playerStacks: playing ? this.game.getAllStacks() : [],
+      traps: playing ? this.game.getTrapsSnapshot() : [],
       matchEndsAt: playing ? this.matchEndsAt : undefined,
       winScore: playing ? MATCH_WIN_SCORE : undefined,
     })
@@ -529,18 +544,30 @@ export class Room {
   handleAttack(seatId: string, yaw: number): void {
     if (this.phase !== 'playing') return
     if (this.game.isStunned(seatId)) return
+    const poses = this.collectPoseMap()
+    this.game.tryAttack(seatId, yaw, poses)
+  }
+
+  handleDiscardItem(seatId: string, yaw: number): void {
+    if (this.phase !== 'playing') return
+    if (this.game.isStunned(seatId)) return
+    const poses = this.collectPoseMap()
+    this.game.tryDiscardItem(seatId, yaw, poses)
+  }
+
+  /** Connected seats + training dummy for combat / item throws. */
+  private collectPoseMap(): Map<string, { x: number; y: number; z: number }> {
     const poses = new Map<string, { x: number; y: number; z: number }>()
     for (const s of this.seats.values()) {
       if (!s.connected || !s.pose) continue
       poses.set(s.id, { x: s.pose.x, y: s.pose.y, z: s.pose.z })
     }
-    // Must include training dummy — it is not a seat
     poses.set(TRAINING_DUMMY_ID, {
       x: 0,
       y: TRAINING_DUMMY_Y,
       z: 0,
     })
-    this.game.tryAttack(seatId, yaw, poses)
+    return poses
   }
 
   handlePose(seatId: string, msg: Extract<ClientMessage, { type: 'pose' }>): void {

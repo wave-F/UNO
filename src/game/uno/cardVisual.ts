@@ -2,7 +2,9 @@ import * as THREE from 'three'
 import {
   UNO_COLOR_HEX,
   STUN_CARD_HEX,
+  SKIP_CARD_HEX,
   cardLabel,
+  isSkipTrap,
   isStunBat,
   rankLabel,
   type UnoCardData,
@@ -19,18 +21,21 @@ export function makeFaceTexture(card: UnoCardData): THREE.CanvasTexture {
   const ctx = canvas.getContext('2d')!
 
   const stun = isStunBat(card)
+  const skip = isSkipTrap(card)
   const hex = stun
     ? STUN_CARD_HEX
-    : card.color
-      ? UNO_COLOR_HEX[card.color]
-      : 0x334155
+    : skip
+      ? SKIP_CARD_HEX
+      : card.color
+        ? UNO_COLOR_HEX[card.color]
+        : 0x334155
   const bg = `#${hex.toString(16).padStart(6, '0')}`
 
   ctx.fillStyle = bg
   roundRect(ctx, 0, 0, 256, 384, 24)
   ctx.fill()
 
-  ctx.strokeStyle = stun ? '#fbbf24' : '#fff'
+  ctx.strokeStyle = stun ? '#fbbf24' : skip ? '#5eead4' : '#fff'
   ctx.lineWidth = 10
   roundRect(ctx, 14, 14, 228, 356, 18)
   ctx.stroke()
@@ -40,19 +45,22 @@ export function makeFaceTexture(card: UnoCardData): THREE.CanvasTexture {
   ctx.ellipse(128, 192, 78, 110, 0, 0, Math.PI * 2)
   ctx.fill()
 
-  ctx.fillStyle = stun ? '#7c3aed' : bg
+  ctx.fillStyle = stun ? '#7c3aed' : skip ? '#0f766e' : bg
   ctx.font = 'bold 96px system-ui, sans-serif'
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  const center = stun ? '晕' : rankLabel(card.rank)
+  const center = stun ? '晕' : skip ? '⊘' : rankLabel(card.rank)
   ctx.fillText(center, 128, 192)
 
-  ctx.fillStyle = stun ? '#fbbf24' : '#fff'
+  ctx.fillStyle = stun ? '#fbbf24' : skip ? '#5eead4' : '#fff'
   ctx.font = 'bold 28px system-ui, sans-serif'
   ctx.fillText(cardLabel(card), 128, 48)
   if (stun) {
     ctx.font = 'bold 22px system-ui, sans-serif'
     ctx.fillText('左键挥击', 128, 320)
+  } else if (skip) {
+    ctx.font = 'bold 22px system-ui, sans-serif'
+    ctx.fillText('左键布置', 128, 320)
   }
 
   const tex = new THREE.CanvasTexture(canvas)

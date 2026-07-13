@@ -13,9 +13,10 @@ import {
   type PickupFeedback,
 } from '../systems/CardPickupSystem'
 import { RemotePlayerSystem } from '../systems/RemotePlayerSystem'
+import { SkipTrapSystem } from '../systems/SkipTrapSystem'
 import { TRAINING_DUMMY_ID } from '../../shared/config/dummy'
 import type { PublicPlayer } from '../../shared/protocol'
-import type { UnoCardData } from '../game/uno/types'
+import { isSkipTrap, type UnoCardData } from '../game/uno/types'
 import { TrainingDummy } from '../entities/TrainingDummy'
 
 export class Game {
@@ -29,6 +30,7 @@ export class Game {
   private cardSystem!: CardPickupSystem
   private homeYard!: HomeYard
   private remotes = new RemotePlayerSystem()
+  private trapSystem: SkipTrapSystem | null = null
   private trainingDummy: TrainingDummy | null = null
   private pendingDummyStack: UnoCardData[] | null = null
   private net: NetClient | null = null
@@ -110,6 +112,7 @@ export class Game {
     this.unsubs.push(
       net.on('welcome', (info) => {
         this.remotes.setLocalPlayerId(info.playerId)
+        this.trapSystem?.setLocalPlayerId(info.playerId)
         this.remotes.syncRoster(info.players)
         this.applyRosterHomes(info.players, info.playerId)
         // Always switch off local authority while in a network room
@@ -129,29 +132,36 @@ export class Game {
             info.yourItem ?? null,
           )
           this.remotes.applyPlayerStacks(info.playerStacks ?? [])
+          this.trapSystem?.setFromSnapshot(info.traps ?? [])
           this.onMatchClock?.(info.matchEndsAt ?? null, info.winScore ?? 20)
         } else {
           this.matchLive = false
           this.removeTrainingDummy()
+          this.trapSystem?.clear()
           this.onMatchClock?.(null, 20)
           // Lobby: still stand at your corner
           this.teleportLocalToHome()
         }
       }),
       net.on('roomState', (info) => {
-        if (net.playerId) this.remotes.setLocalPlayerId(net.playerId)
+        if (net.playerId) {
+          this.remotes.setLocalPlayerId(net.playerId)
+          this.trapSystem?.setLocalPlayerId(net.playerId)
+        }
         this.remotes.syncRoster(info.players)
         this.applyRosterHomes(info.players, net.playerId)
         if (info.phase === 'lobby' && this.matchLive) {
           // Match ended elsewhere / returned to lobby
           this.matchLive = false
           this.removeTrainingDummy()
+          this.trapSystem?.clear()
           this.onMatchClock?.(null, 20)
         }
       }),
       net.on('matchStart', (ground, scores, homes, meta) => {
         this.remotes.clearAllStacks()
         this.homeYard.clearAllPiles()
+        this.trapSystem?.clear()
         // Authoritative homes from match_start (do not trust only lobby roster)
         if (homes.length) {
           this.applyHomesList(homes, net.playerId, net.players)
@@ -164,6 +174,7 @@ export class Game {
       net.on('matchEnd', (info) => {
         this.matchLive = false
         this.removeTrainingDummy()
+        this.trapSystem?.clear()
         this.remotes.clearAllStacks()
         this.homeYard.clearAllPiles()
         this.cardSystem.enterOnlineMode()
@@ -277,6 +288,36 @@ export class Game {
           kind: 'bad',
         })
       }),
+      net.on('trapPlaced', (trap) => {
+        if (!this.matchLive) return
+        this.trapSystem?.add(trap)
+        if (trap.ownerId === net.playerId) {
+          this.onPickupFeedback({
+            type: 'toast',
+            text: '已布置 Skip 陷阱（自己不会踩中）',
+            kind: 'ok',
+          })
+        }
+      }),
+      net.on('trapRemoved', (trapId) => {
+        this.trapSystem?.remove(trapId)
+      }),
+      net.on('trapTriggered', (info) => {
+        if (!this.matchLive) return
+        if (info.victimId === net.playerId) {
+          this.onPickupFeedback({
+            type: 'toast',
+            text: '踩中 Skip 陷阱！眩晕 2 秒',
+            kind: 'bad',
+          })
+        } else if (info.ownerId === net.playerId) {
+          this.onPickupFeedback({
+            type: 'toast',
+            text: '有人踩中了你的 Skip 陷阱！',
+            kind: 'ok',
+          })
+        }
+      }),
       net.on('playerItem', (playerId, item) => {
         if (playerId === net.playerId) return
         this.remotes.setPlayerItem(playerId, item)
@@ -286,6 +327,7 @@ export class Game {
           this.matchLive = false
           this.remotes.clear()
           this.removeTrainingDummy()
+          this.trapSystem?.clear()
           this.homeByPlayer.clear()
           if (this.cardSystem.isOnline()) {
             this.cardSystem.enterOfflineMode()
@@ -355,9 +397,12 @@ export class Game {
       })
     }
     if (item) {
+      const text = isSkipTrap(item)
+        ? '手持 Skip 陷阱 · 左键布置到脚下（不进背包）'
+        : '手持眩晕棒 · 左键挥击（不进背包）'
       this.onPickupFeedback({
         type: 'toast',
-        text: '手持眩晕棒 · 左键挥击（不进背包）',
+        text,
         kind: 'ok',
       })
     }
@@ -484,6 +529,7 @@ export class Game {
     )
     this.scene.add(this.cardSystem.group)
     this.scene.add(this.remotes.group)
+    this.trapSystem = new SkipTrapSystem(this.scene)
 
     this.cameraFollow.snapTo(this.playerCtrl.getPosition())
 
@@ -510,6 +556,7 @@ export class Game {
     document.removeEventListener('pointerlockchange', this.handlePointerLock)
     this.input.dispose()
     this.cardSystem?.dispose()
+    this.trapSystem?.clear()
     this.homeYard?.dispose()
     this.remotes.dispose()
     this.physics.dispose()
@@ -549,6 +596,7 @@ export class Game {
     this.cameraFollow.updatePosition(pos, dt)
     this.cardSystem.update(pos, dt)
     this.remotes.update(dt)
+    this.trapSystem?.update(dt)
     this.trainingDummy?.update(dt)
 
     if (this.net?.isPlaying) {
@@ -563,13 +611,32 @@ export class Game {
         if (!held) {
           this.onPickupFeedback({
             type: 'toast',
-            text: '没有狼牙棒，先去场上捡',
+            text: '没有道具，先去场上捡狼牙棒或 Skip',
             kind: 'bad',
           })
         } else {
-          // Local swing FX immediately; server resolves hit
-          this.playerCtrl.player.playSwing()
+          // Mace: local swing FX; skip: server places trap (no melee fan)
+          if (!isSkipTrap(held)) {
+            this.playerCtrl.player.playSwing()
+          }
           this.net.attack(this.playerCtrl.getYaw())
+        }
+      }
+      if (this.input.consumeDiscardItem() && !this.playerCtrl.isStunned()) {
+        const held = this.playerCtrl.player.getHeldItem()
+        if (!held) {
+          this.onPickupFeedback({
+            type: 'toast',
+            text: '没有可丢弃的道具',
+            kind: 'bad',
+          })
+        } else {
+          this.net.discardItem(this.playerCtrl.getYaw())
+          this.onPickupFeedback({
+            type: 'toast',
+            text: '丢弃道具',
+            kind: 'ok',
+          })
         }
       }
     }

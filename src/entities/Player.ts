@@ -3,8 +3,12 @@ import { movementConfig } from '../config/movement'
 import { HeadCardDisplay } from './HeadCardDisplay'
 import { AttackRangeVisual } from './AttackRangeVisual'
 import { StunFx } from './StunFx'
+import {
+  createCardMesh,
+  disposeCardMesh,
+} from '../game/uno/cardVisual'
 import { createMaceMesh, disposeMaceMesh } from '../game/uno/maceVisual'
-import { isStunBat, type UnoCardData } from '../game/uno/types'
+import { isSkipTrap, isStunBat, type UnoCardData } from '../game/uno/types'
 
 export type PlayerVisualOptions = {
   /** Body color (default local pink). */
@@ -26,6 +30,7 @@ export class Player {
   /** Right-hand pivot (shoulder/hand height). */
   private readonly handPivot: THREE.Group
   private weaponRoot: THREE.Group | null = null
+  private weaponFaceTex: THREE.CanvasTexture | null = null
 
   private swingT = -1
   private readonly swingDuration = 0.34
@@ -119,7 +124,8 @@ export class Player {
       if (item || this.swingT < 0) this.rebuildWeaponMesh()
     }
     this.handPivot.visible = !!item || this.swingT >= 0
-    this.attackRange.setHolding(!!item)
+    // Melee cone only for mace; skip is place-at-feet
+    this.attackRange.setHolding(!!item && isStunBat(item))
     if (!item && this.swingT < 0) {
       this.handPivot.rotation.set(this.handRestX, 0, this.handRestZ)
     }
@@ -194,8 +200,14 @@ export class Player {
       mace.rotation.x = 0.15
       mace.rotation.z = -0.2
       this.weaponRoot.add(mace)
+    } else if (isSkipTrap(this.heldItem)) {
+      const { mesh, texture } = createCardMesh(this.heldItem, 0.42, 0.35)
+      this.weaponFaceTex = texture
+      mesh.position.set(0.04, -0.02, 0.06)
+      mesh.rotation.x = 0.35
+      mesh.rotation.z = -0.15
+      this.weaponRoot.add(mesh)
     } else {
-      // Future generic items: still show mace-like placeholder
       const mace = createMaceMesh(0.7)
       this.weaponRoot.add(mace)
     }
@@ -204,10 +216,20 @@ export class Player {
   }
 
   private clearWeaponMesh(): void {
-    if (this.weaponRoot) {
-      this.handPivot.remove(this.weaponRoot)
+    if (!this.weaponRoot) return
+    this.handPivot.remove(this.weaponRoot)
+    if (this.weaponFaceTex) {
+      let disposed = false
+      this.weaponRoot.traverse((o) => {
+        if (!disposed && o instanceof THREE.Mesh && this.weaponFaceTex) {
+          disposeCardMesh(o, this.weaponFaceTex)
+          disposed = true
+        }
+      })
+      this.weaponFaceTex = null
+    } else {
       disposeMaceMesh(this.weaponRoot)
-      this.weaponRoot = null
     }
+    this.weaponRoot = null
   }
 }

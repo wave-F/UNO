@@ -2,6 +2,7 @@ export class InputManager {
   private keys = new Set<string>()
   private jumpPressed = false
   private attackPressed = false
+  private discardPressed = false
   private mouseDx = 0
   private mouseDy = 0
   private pointerLocked = false
@@ -78,6 +79,13 @@ export class InputManager {
     return true
   }
 
+  /** G: drop held hand item in front. */
+  consumeDiscardItem(): boolean {
+    if (!this.discardPressed) return false
+    this.discardPressed = false
+    return true
+  }
+
   private onClick = (): void => {
     if (document.pointerLockElement !== this.target) {
       void this.target.requestPointerLock()
@@ -116,6 +124,10 @@ export class InputManager {
       e.preventDefault()
       this.jumpPressed = true
     }
+    if (e.code === 'KeyG') {
+      e.preventDefault()
+      this.discardPressed = true
+    }
     if (e.code === 'Escape') {
       // browser exits pointer lock; no-op
     }
@@ -129,6 +141,7 @@ export class InputManager {
     this.keys.clear()
     this.jumpPressed = false
     this.attackPressed = false
+    this.discardPressed = false
     this.mouseDx = 0
     this.mouseDy = 0
   }

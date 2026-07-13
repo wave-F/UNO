@@ -7,13 +7,16 @@
 当前能力：
 
 - 渲染糖果色软垫风格场景
-- 玩家键盘 **移动 / 跳跃**（相对镜头）；点击锁定鼠标转镜头；**左键挥狼牙棒**
+- 玩家键盘 **移动 / 跳跃**（相对镜头）；点击锁定鼠标转镜头；**左键使用手持道具**；**G 丢弃**道具到身前（爆牌飞出）
 - Rapier 物理 + Kinematic Character Controller
 - 场景 **UNO 数字牌**拾取堆叠（`canStackOn`）；运回 **本家角**计分
 - **背牌减速**：每张背包牌 **−5%** 移速，最低 **50%**（`shared/config/movement.ts`）
 - **局域网联机**：多房间、大厅、房主开始、位姿+权威卡牌；可单机
-- **服务器机器人**（测试）：捡牌/卸货/偶发偷家；持棒攻击有 **0.5–1.5s 随机前摇**
-- **眩晕道具**：无色功能牌 → 场上/手持为 **狼牙棒**网格；击中眩晕 1.5s、掉背包顶至多 4 张；**不掉对方手持道具**；**眩晕期间不可捡牌/卸货/偷家**
+- **服务器机器人**（测试）：捡牌/卸货/偶发偷家；持棒攻击有 **0.5–1.5s 随机前摇**；可布置 Skip
+- **手持道具（互斥，仅 1 个）**：
+  - **狼牙棒**：场上/手持为棒网格；左键挥击 → 眩晕 1.5s、掉背包顶至多 4 张
+  - **Skip 陷阱**：场上为 Skip 牌面；左键布置到脚下（全员可见、无时限）；**他人**踩中眩晕 2s；**自己不踩中**
+- **不掉对方手持道具**；**眩晕期间不可捡牌/卸货/偷家**
 - **木头人**（场地中央）：可打测试靶，背后叠测试牌，眩晕后自动补牌
 - **回合胜负**：2 分钟；先把牌送达老家 **20 张**者胜；超时则老家张数最多者胜（`shared/config/match.ts`）
 
@@ -58,8 +61,8 @@
 | 房间 | `RoomManager`：创建/房间码加入；测试房 `0000` 可一点即玩 |
 | 位姿 | 客户端 20Hz 上报；服务器 10Hz 广播；远端插值 ~100ms |
 | 卡牌 | `server/GameSim` 刷牌/拾取/卸货/攻击；客户端仅表现 |
-| 道具 | 手持 `item`（狼牙棒）≠ 背包 `stack`；`player_item` 公开同步 |
-| 攻击 | 身前锥形 `ATTACK_RANGE`/`ATTACK_CONE_DEG`；命中消耗自己的棒 |
+| 道具 | 手持 `item`（狼牙棒 / Skip）≠ 背包 `stack`；`player_item` 公开同步；互斥 |
+| 攻击 | 棒：锥形命中消耗；Skip：`trap_placed` 布置脚下，踩中 `trap_triggered` |
 | 背上牌 | `private_state` + 全员 `player_stack` |
 | 老家 | 四角 0–3；仅本家卸货 |
 | 人数 | 最多 4（+ 非座位木头人 `training_dummy`） |
@@ -82,7 +85,8 @@ Uno/
 ├── src/
 │   ├── main.ts / core/Game.ts
 │   ├── net/NetClient.ts
-│   ├── entities/{Player,TrainingDummy,AttackRangeVisual,StunFx,...}
+│   ├── entities/{Player,TrainingDummy,AttackRangeVisual,StunFx,SkipTrapMarker,...}
+│   ├── systems/SkipTrapSystem.ts
 │   ├── game/uno/{cardVisual,maceVisual}.ts
 │   └── ui/{LobbyPanel,GameHud}.ts
 └── Code_Wiki.md
@@ -90,19 +94,21 @@ Uno/
 
 | 文件 | 作用 |
 |------|------|
-| `shared/protocol.ts` | 消息类型；`attack` / `player_stunned` / `ground_snapshot` 等 |
+| `shared/protocol.ts` | 消息类型；`attack` / `player_stunned` / `trap_*` / `ground_snapshot` 等 |
 | `shared/config/movement.ts` | 背牌减速、基础移速（前后端共用） |
 | `shared/config/dummy.ts` | 木头人 id / 高度 / 补牌张数 |
-| `shared/uno/types.ts` | 牌型、眩晕常量、`isStunBat` |
-| `shared/uno/deck.ts` | 刷牌；`stunFraction:0` 时不生成眩晕 |
-| `server/GameSim.ts` | 场上牌、背包、道具、攻击、爆牌、木头人 |
-| `server/Bot.ts` | 机器人寻路与延迟攻击 |
-| `server/Room.ts` | 房间 tick、位姿、攻击 pose 含木头人 |
+| `shared/uno/types.ts` | 牌型、`isStunBat` / `isSkipTrap` / `isHandItem`、眩晕与陷阱常量 |
+| `shared/uno/deck.ts` | 刷牌；`stunFraction` / `skipFraction`；均为 0 时纯数字 |
+| `server/GameSim.ts` | 场上牌、背包、道具、攻击、Skip 陷阱、爆牌、木头人 |
+| `server/Bot.ts` | 机器人寻路、延迟挥棒、近敌布置 Skip |
+| `server/Room.ts` | 房间 tick、位姿、攻击 pose 含木头人；转发 `trap_*` |
 | `src/game/uno/maceVisual.ts` | 程序化狼牙棒网格 |
+| `src/entities/SkipTrapMarker.ts` | 已布置 Skip 陷阱地面标记 |
+| `src/systems/SkipTrapSystem.ts` | 客户端陷阱增删/动画 |
 | `src/entities/TrainingDummy.ts` | 中央木头人 + 受击/眩晕表现 |
-| `src/entities/AttackRangeVisual.ts` | 身前攻击扇形 |
+| `src/entities/AttackRangeVisual.ts` | 身前攻击扇形（仅狼牙棒） |
 | `src/entities/StunFx.ts` | 头顶眩晕星星 |
-| `src/entities/Player.ts` | 本地/远端豆人 + 手持棒 + 背牌 |
+| `src/entities/Player.ts` | 本地/远端豆人 + 手持棒/Skip 牌 + 背牌 |
 
 ### npm scripts
 
@@ -124,12 +130,14 @@ npm run build     # tsc + vite build
 
 ## 战斗与道具摘要
 
-- 眩晕为**无色功能牌**，不按 UNO 顺序；有空手持槽即可捡  
-- 场上/手持显示为狼牙棒，不进背包  
-- 左键：身前扇形内最近目标；命中 → 眩晕 1.5s、从背包**顶**掉 `min(4, 张数)` 数字牌、消耗自己的棒  
+- 功能道具为**无色牌**，不按 UNO 顺序；占**唯一**手持槽 `item`（狼牙棒与 Skip **互斥**），不进背包  
+- **狼牙棒**：场上/手持为棒网格；左键扇形最近目标；命中 → 眩晕 **1.5s**、掉背包顶 `min(4, 张数)`、消耗自己的棒  
+- **Skip 陷阱**：场上刷更多（`skipFraction` 默认约 0.32）；左键在脚下布置（`trap_placed`）；**无存在时限**、**全员可见**；**放置者不会踩中**；他人踩入 `SKIP_TRAP_RADIUS` → 眩晕 **2s**，陷阱移除（`trap_removed` / `trap_triggered`）  
+- **G 丢弃**：`discard_item` + yaw → 手持道具以 `stun_drop` 爆牌飞到身前约 1.35m，可再捡；眩晕中不可丢  
 - **不掉对方手持道具**；被眩晕时 **tick / interact 均禁止** 捡牌、卸货、偷家  
-- 爆落牌 `source: stun_drop`；木头人补牌 / 重连 welcome 会清理残留爆落  
-- 机器人攻击：范围内随机前摇 0.5–1.5s 再挥，冷却 0.9–1.7s  
+- 爆落牌 `source: stun_drop`；木头人补牌 / 重连 welcome 会清理残留爆落；重连 `welcome.traps` 同步陷阱  
+- 机器人：棒在范围内 0.5–1.5s 前摇再挥；持 Skip 时近敌会布置，冷却约 0.8–1.4s  
+
 
 ## 回合胜负
 

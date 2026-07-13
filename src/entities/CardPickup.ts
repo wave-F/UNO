@@ -5,16 +5,25 @@ import {
   disposeCardMesh,
 } from '../game/uno/cardVisual'
 import { createMaceMesh, disposeMaceMesh, MACE_HEIGHT } from '../game/uno/maceVisual'
-import { isStunBat, type UnoCardData } from '../game/uno/types'
+import {
+  createSkipPickupMesh,
+  disposeSkipPickupMesh,
+  SKIP_PICKUP_HEIGHT,
+} from '../game/uno/skipVisual'
+import { isSkipTrap, isStunBat, type UnoCardData } from '../game/uno/types'
 
 /** World pickup cards are 2× base card mesh size. */
 const FIELD_CARD_SCALE = 2
 /** Field mace size. */
 const FIELD_MACE_SCALE = 1.35
+/** Field skip prop size. */
+const FIELD_SKIP_SCALE = 1.25
 
 const FLY_DURATION = 0.55
 
 export type BurstOrigin = { x: number; y: number; z: number }
+
+type PickupKind = 'card' | 'mace' | 'skip'
 
 export class CardPickup {
   readonly mesh: THREE.Group
@@ -26,7 +35,7 @@ export class CardPickup {
   private readonly landZ: number
   private visual: THREE.Object3D
   private faceTex: THREE.CanvasTexture | null = null
-  private readonly isMace: boolean
+  private readonly kind: PickupKind
 
   /** 0..1 while bursting from body; <0 when idle. */
   private flyT = -1
@@ -42,15 +51,21 @@ export class CardPickup {
     this.mesh = new THREE.Group()
     this.mesh.name = `Pickup_${card.id}`
     this.bobOffset = Math.random() * Math.PI * 2
-    this.isMace = isStunBat(card)
     this.landX = position.x
     this.landZ = position.z
 
-    if (this.isMace) {
+    if (isStunBat(card)) {
+      this.kind = 'mace'
       this.visual = createMaceMesh(FIELD_MACE_SCALE)
       this.mesh.add(this.visual)
       this.baseY = MACE_HEIGHT * FIELD_MACE_SCALE * 0.5 + 0.15
+    } else if (isSkipTrap(card)) {
+      this.kind = 'skip'
+      this.visual = createSkipPickupMesh(FIELD_SKIP_SCALE)
+      this.mesh.add(this.visual)
+      this.baseY = SKIP_PICKUP_HEIGHT * FIELD_SKIP_SCALE * 0.45 + 0.12
     } else {
+      this.kind = 'card'
       const created = createCardMesh(card, FIELD_CARD_SCALE)
       this.visual = created.mesh
       this.faceTex = created.texture
@@ -98,17 +113,21 @@ export class CardPickup {
       return
     }
 
-    this.mesh.position.y = this.baseY + Math.sin(this.elapsed * 2.2 + this.bobOffset) * 0.06
-    this.mesh.rotation.y += dt * (this.isMace ? 1.1 : 1.4)
-    if (this.isMace) {
+    const spin = this.kind === 'mace' ? 1.1 : this.kind === 'skip' ? 0.9 : 1.4
+    this.mesh.position.y =
+      this.baseY + Math.sin(this.elapsed * 2.2 + this.bobOffset) * 0.06
+    this.mesh.rotation.y += dt * spin
+    if (this.kind === 'mace' || this.kind === 'skip') {
       this.mesh.rotation.z = Math.sin(this.elapsed * 1.6 + this.bobOffset) * 0.08
     }
   }
 
   dispose(): void {
     this.mesh.remove(this.visual)
-    if (this.faceTex && this.visual instanceof THREE.Mesh) {
+    if (this.kind === 'card' && this.faceTex && this.visual instanceof THREE.Mesh) {
       disposeCardMesh(this.visual, this.faceTex)
+    } else if (this.kind === 'skip') {
+      disposeSkipPickupMesh(this.visual)
     } else {
       disposeMaceMesh(this.visual)
     }

@@ -5,7 +5,7 @@
  */
 import { maxSpeedForCarry, BASE_MAX_SPEED } from '../shared/config/movement.ts'
 import { canStackOn, canPickupItem } from '../shared/uno/rules.ts'
-import { isStunBat, ATTACK_RANGE } from '../shared/uno/types.ts'
+import { isHandItem, isStunBat, ATTACK_RANGE } from '../shared/uno/types.ts'
 import { getHomeSlot } from '../shared/config/home.ts'
 import type { GameSim } from './GameSim.ts'
 import type { Seat } from './Room.ts'
@@ -127,7 +127,43 @@ export class BotController {
       return
     }
     const st = game.getPlayerState(this.seatId)
-    if (!st?.item || !isStunBat(st.item) || !seat.pose) {
+    if (!st?.item || !seat.pose) {
+      this.attackWindup = -1
+      this.windupTargetId = null
+      return
+    }
+
+    // Skip trap: place near opponents when any enemy is close enough to bait
+    if (st.item.kind === 'skip_trap' || st.item.rank === 'skip') {
+      let nearEnemy = false
+      for (const [id, pos] of poseMap) {
+        if (id === this.seatId) continue
+        if (game.isStunned(id)) continue
+        const d = Math.hypot(pos.x - seat.pose.x, pos.z - seat.pose.z)
+        if (d > 0.3 && d < 3.2) {
+          nearEnemy = true
+          break
+        }
+      }
+      if (!nearEnemy) {
+        this.attackWindup = -1
+        this.windupTargetId = null
+        return
+      }
+      if (this.attackWindup < 0) {
+        this.attackWindup = 0.25 + Math.random() * 0.4
+        return
+      }
+      this.attackWindup -= dt
+      if (this.attackWindup > 0) return
+      game.tryAttack(this.seatId, seat.pose.yaw, poseMap)
+      this.attackWindup = -1
+      this.windupTargetId = null
+      this.attackCooldown = 0.8 + Math.random() * 0.6
+      return
+    }
+
+    if (!isStunBat(st.item)) {
       this.attackWindup = -1
       this.windupTargetId = null
       return
@@ -266,8 +302,8 @@ function standingYForBot(x: number, z: number, homeIndex: number): number {
 /**
  * Nearest field target the bot can actually pick up:
  * - number: empty stack or canStackOn(top, card)
- * - stun: only if hand item slot empty (not stack order)
- * Prefer numbers over stun so bots don't park on useless stun piles.
+ * - hand item (mace / skip): only if hand slot empty
+ * Prefer numbers over items.
  */
 function nearestLegalField(
   game: GameSim,
@@ -280,21 +316,20 @@ function nearestLegalField(
   const top = st.stack.length ? st.stack[st.stack.length - 1]! : null
 
   let bestNum: { x: number; z: number; d: number } | null = null
-  let bestStun: { x: number; z: number; d: number } | null = null
+  let bestItem: { x: number; z: number; d: number } | null = null
 
   for (const g of game.listGround()) {
     const d = Math.hypot(g.x - px, g.z - pz)
-    if (isStunBat(g.card)) {
+    if (isHandItem(g.card)) {
       if (!canPickupItem(!!st.item, g.card)) continue
-      if (!bestStun || d < bestStun.d) bestStun = { x: g.x, z: g.z, d }
+      if (!bestItem || d < bestItem.d) bestItem = { x: g.x, z: g.z, d }
       continue
     }
     if (top && !canStackOn(top, g.card)) continue
     if (!bestNum || d < bestNum.d) bestNum = { x: g.x, z: g.z, d }
   }
 
-  // Prefer number cards; only chase stun when no legal number and hand free
   if (bestNum) return bestNum
-  if (bestStun) return bestStun
+  if (bestItem) return bestItem
   return null
 }

@@ -42,6 +42,14 @@ export type ScoreEntry = {
   stackCount: number
 }
 
+/** Placed skip trap on the field (visible to everyone). */
+export type PlacedTrapWire = {
+  id: string
+  ownerId: string
+  x: number
+  z: number
+}
+
 /** Public backpack stack for all clients (visible on avatar back). */
 export type PlayerStackEntry = {
   playerId: string
@@ -103,6 +111,11 @@ export type ClientMessage =
       type: 'attack'
       yaw: number
     }
+  | {
+      /** Drop hand item onto ground in front (burst fly-out). */
+      type: 'discard_item'
+      yaw: number
+    }
 
 // ── Server → Client ─────────────────────────────────────────
 
@@ -137,6 +150,8 @@ export type ServerMessage =
       scores: ScoreEntry[]
       /** Everyone's backpack for remote avatar visuals (incl. self). */
       playerStacks: PlayerStackEntry[]
+      /** Active skip traps (reconnect mid-match). */
+      traps?: PlacedTrapWire[]
       /** When phase=playing: round end epoch ms / win target. */
       matchEndsAt?: number
       winScore?: number
@@ -274,6 +289,21 @@ export type ServerMessage =
       attackerId: string
     }
   | {
+      type: 'trap_placed'
+      trap: PlacedTrapWire
+    }
+  | {
+      type: 'trap_removed'
+      trapId: string
+      reason: 'triggered' | 'cleared'
+    }
+  | {
+      type: 'trap_triggered'
+      trapId: string
+      ownerId: string
+      victimId: string
+    }
+  | {
       type: 'pong'
       t: number
       serverTime: number
@@ -309,6 +339,7 @@ export function isClientMessage(data: unknown): data is ClientMessage {
     t === 'remove_bot' ||
     t === 'ping' ||
     t === 'pose' ||
-    t === 'attack'
+    t === 'attack' ||
+    t === 'discard_item'
   )
 }

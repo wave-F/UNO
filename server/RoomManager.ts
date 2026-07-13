@@ -107,6 +107,12 @@ export class RoomManager {
         ctx.room.handleAttack(ctx.seatId, yaw)
         break
       }
+      case 'discard_item': {
+        if (!ctx.room || !ctx.seatId) return
+        const yaw = typeof msg.yaw === 'number' && Number.isFinite(msg.yaw) ? msg.yaw : 0
+        ctx.room.handleDiscardItem(ctx.seatId, yaw)
+        break
+      }
       default:
         send(ws, { type: 'error', code: 'bad_message', message: '未知消息类型' })
     }
@@ -348,9 +354,9 @@ export class RoomManager {
     this.bind(ws, room, seat)
     room.sendWelcome(ws, seat)
     room.broadcastRoomState()
-    // Dev quick room: auto bot + auto start
+    // Dev quick room: 1 human + 3 bots, then auto start (fills MAX_PLAYERS=4)
     if (isDevQuick) {
-      room.addBot(seat.id)
+      for (let i = 0; i < 3; i++) room.addBot(seat.id)
       room.forceStartMatch()
     }
   }

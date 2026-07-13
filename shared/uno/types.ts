@@ -1,13 +1,13 @@
 /** Four UNO colors; numbers use these. Function cards may omit color. */
 export type UnoColor = 'red' | 'yellow' | 'green' | 'blue'
 
-export type UnoRank = '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | 'stun'
+export type UnoRank = '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | 'stun' | 'skip'
 
-export type UnoKind = 'number' | 'stun_bat'
+export type UnoKind = 'number' | 'stun_bat' | 'skip_trap'
 
 export type UnoCardData = {
   id: string
-  /** Omitted / null for colorless function cards (e.g. stun). */
+  /** Omitted / null for colorless function cards (e.g. stun / skip). */
   color?: UnoColor | null
   rank: UnoRank
   /** Default number when omitted. */
@@ -31,6 +31,8 @@ export const UNO_COLOR_CSS: Record<UnoColor, string> = {
 /** Face / UI color for colorless function cards. */
 export const STUN_CARD_HEX = 0x4c1d95
 export const STUN_CARD_CSS = '#4c1d95'
+export const SKIP_CARD_HEX = 0x0f766e
+export const SKIP_CARD_CSS = '#0f766e'
 
 const COLOR_NAME: Record<UnoColor, string> = {
   red: '红',
@@ -43,19 +45,34 @@ export function isStunBat(card: UnoCardData): boolean {
   return card.kind === 'stun_bat' || card.rank === 'stun'
 }
 
+export function isSkipTrap(card: UnoCardData): boolean {
+  return card.kind === 'skip_trap' || card.rank === 'skip'
+}
+
+/** Hand-held prop slot: mace or skip trap (mutually exclusive, never backpack). */
+export function isHandItem(card: UnoCardData): boolean {
+  return isStunBat(card) || isSkipTrap(card)
+}
+
 export function rankLabel(rank: UnoRank): string {
   if (rank === 'stun') return '晕'
+  if (rank === 'skip') return '禁'
   return rank
 }
 
 export function cardLabel(card: UnoCardData): string {
   if (isStunBat(card)) return '狼牙棒'
+  if (isSkipTrap(card)) return 'Skip陷阱'
   if (!card.color) return rankLabel(card.rank)
   return `${COLOR_NAME[card.color]} ${card.rank}`
 }
 
 /** Attack item constants (server + client). */
 export const STUN_DURATION_MS = 1500
+/** Skip trap stun when stepped on. */
+export const SKIP_TRAP_STUN_MS = 2000
+/** Step-on radius for placed skip traps (XZ meters). */
+export const SKIP_TRAP_RADIUS = 0.85
 /** On hit: drop exactly min(STUN_DROP_MAX, backpack length) cards from stack top. */
 export const STUN_DROP_MAX = 4
 /** Melee reach (world units). */

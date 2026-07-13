@@ -19,11 +19,28 @@ import {
   ATTACK_CONE_DEG,
   ATTACK_COOLDOWN_MS,
   ATTACK_RANGE,
+  isHandItem,
+  isSkipTrap,
   isStunBat,
+  SKIP_TRAP_RADIUS,
+  SKIP_TRAP_STUN_MS,
   STUN_DROP_MAX,
   STUN_DURATION_MS,
   type UnoCardData,
 } from '../shared/uno/types.ts'
+
+export type PlacedTrap = {
+  id: string
+  ownerId: string
+  x: number
+  z: number
+}
+
+let trapIdSeq = 0
+function nextTrapId(): string {
+  trapIdSeq += 1
+  return `trap_${trapIdSeq}_${Math.random().toString(36).slice(2, 7)}`
+}
 
 export type GroundCard = {
   card: UnoCardData
@@ -52,6 +69,8 @@ export type PlayerGameState = {
   /** Stun ends at this epoch ms (0 = not stunned). */
   stunUntil: number
   lastAttackAt: number
+  /** After G-drop: cannot re-pick hand items until this epoch ms. */
+  itemPickupBlockUntil: number
 }
 
 export type GameSimEvents = {
@@ -95,6 +114,13 @@ export type GameSimEvents = {
   onStunned: (playerId: string, until: number, durationMs: number) => void
   onAttackHit: (attackerId: string, victimId: string, dropped: number) => void
   onAttackMiss: (attackerId: string) => void
+  onTrapPlaced: (trap: PlacedTrap) => void
+  onTrapRemoved: (trapId: string, reason: 'triggered' | 'cleared') => void
+  onTrapTriggered: (info: {
+    trapId: string
+    ownerId: string
+    victimId: string
+  }) => void
   /** Full ground replace (client must clear then add). */
   onGroundSnapshot: (cards: GroundCard[]) => void
 }
@@ -102,6 +128,8 @@ export type GameSimEvents = {
 export class GameSim {
   private ground: GroundCard[] = []
   private players = new Map<string, PlayerGameState>()
+  /** Placed skip traps (no lifetime; removed on step). */
+  private traps: PlacedTrap[] = []
   private spawnTimer = 0
   private started = false
   /** When > 0, refill dummy backpack after this epoch ms. */
@@ -140,6 +168,7 @@ export class GameSim {
     this.clearStunDropCards()
     p.stack = createRandomCards(TRAINING_DUMMY_STACK, Math.random, {
       stunFraction: 0,
+      skipFraction: 0,
     })
     p.item = null
     p.stunUntil = 0
@@ -190,11 +219,13 @@ export class GameSim {
       stolenFromHomes: new Set(),
       stunUntil: 0,
       lastAttackAt: 0,
+      itemPickupBlockUntil: 0,
     })
   }
 
   /** Full reset for a new match in the same room (optional later). */
   resetMatch(): void {
+    this.clearAllTraps()
     this.ground = []
     this.spawnTimer = 0
     this.started = false
@@ -210,6 +241,20 @@ export class GameSim {
       p.stolenFromHomes.clear()
       p.stunUntil = 0
       p.lastAttackAt = 0
+      p.itemPickupBlockUntil = 0
+    }
+  }
+
+  getTrapsSnapshot(): PlacedTrap[] {
+    return this.traps.map((t) => ({ ...t }))
+  }
+
+  private clearAllTraps(): void {
+    if (!this.traps.length) return
+    const ids = this.traps.map((t) => t.id)
+    this.traps = []
+    for (const id of ids) {
+      this.events.onTrapRemoved(id, 'cleared')
     }
   }
 
@@ -300,6 +345,9 @@ export class GameSim {
       }
     }
 
+    // Step on skip traps before interact (stunned victims still trigger? no — only walking)
+    this.checkTrapSteps(poses)
+
     for (const [playerId, pose] of poses) {
       if (playerId === TRAINING_DUMMY_ID) continue
       // Stunned: no pickup / deposit / steal until stun ends
@@ -313,6 +361,47 @@ export class GameSim {
     }
   }
 
+  /**
+   * Other players step on skip traps → stun 2s; owner never triggers own trap.
+   * Traps have no duration limit; removed only when triggered.
+   */
+  private checkTrapSteps(
+    poses: Map<string, { x: number; y: number; z: number }>,
+  ): void {
+    if (!this.traps.length) return
+    const now = Date.now()
+    const triggered: string[] = []
+
+    for (const trap of this.traps) {
+      for (const [playerId, pose] of poses) {
+        if (playerId === TRAINING_DUMMY_ID) continue
+        if (playerId === trap.ownerId) continue
+        if (this.isStunned(playerId, now)) continue
+        const d = Math.hypot(pose.x - trap.x, pose.z - trap.z)
+        if (d > SKIP_TRAP_RADIUS) continue
+
+        const vic = this.players.get(playerId)
+        if (!vic) continue
+        vic.stunUntil = now + SKIP_TRAP_STUN_MS
+        this.events.onStunned(playerId, vic.stunUntil, SKIP_TRAP_STUN_MS)
+        this.events.onTrapTriggered({
+          trapId: trap.id,
+          ownerId: trap.ownerId,
+          victimId: playerId,
+        })
+        triggered.push(trap.id)
+        break
+      }
+    }
+
+    if (!triggered.length) return
+    this.traps = this.traps.filter((t) => {
+      if (!triggered.includes(t.id)) return true
+      this.events.onTrapRemoved(t.id, 'triggered')
+      return false
+    })
+  }
+
   /** Immediate interaction after a pose update (no spawn). */
   interactOne(playerId: string, x: number, z: number): void {
     if (!this.started) return
@@ -321,8 +410,50 @@ export class GameSim {
   }
 
   /**
-   * Melee attack with hand item (stun bat) — not backpack.
-   * On hit: stun 1.5s, drop up to 4 backpack cards, consume hand item.
+   * Drop hand item in front of the player (same burst as stun_drop loot).
+   * Facing from yaw: (sin, cos) on XZ.
+   * Throw beyond pickup radius + short re-pickup block so G does not auto re-grab.
+   */
+  tryDiscardItem(
+    playerId: string,
+    yaw: number,
+    poses: Map<string, { x: number; y: number; z: number }>,
+  ): void {
+    if (!this.started) return
+    const now = Date.now()
+    const p = this.players.get(playerId)
+    if (!p || !p.item || this.isStunned(playerId, now)) return
+    const pos = poses.get(playerId)
+    if (!pos) return
+
+    const card = p.item
+    p.item = null
+    // Prevent instant re-pickup (throw was inside CARD_PICKUP_RADIUS before)
+    p.itemPickupBlockUntil = now + 800
+    this.events.onPrivateState(playerId, [...p.stack], p.score, null)
+
+    const fx = Math.sin(yaw)
+    const fz = Math.cos(yaw)
+    // Must land outside pickup radius when standing still
+    const throwDist = CARD_PICKUP_RADIUS + 0.85
+    const dropped: GroundCard = {
+      card,
+      x: pos.x + fx * throwDist,
+      y: 0.55,
+      z: pos.z + fz * throwDist,
+      source: 'stun_drop',
+    }
+    this.ground.push(dropped)
+    this.events.onSpawn([dropped], {
+      burstFrom: { x: pos.x, y: pos.y, z: pos.z },
+    })
+    this.emitScores()
+  }
+
+  /**
+   * Use hand item:
+   * - stun bat: melee cone; on hit stun 1.5s + drop cards, consume bat
+   * - skip trap: place trap under feet immediately, consume item
    */
   tryAttack(
     attackerId: string,
@@ -334,11 +465,28 @@ export class GameSim {
     const atk = this.players.get(attackerId)
     if (!atk || this.isStunned(attackerId, now)) return
     if (now - atk.lastAttackAt < ATTACK_COOLDOWN_MS) return
-
-    if (!atk.item || !isStunBat(atk.item)) return
+    if (!atk.item) return
 
     const ap = poses.get(attackerId)
     if (!ap) return
+
+    // Skip trap: place at feet (always succeeds if holding skip)
+    if (isSkipTrap(atk.item)) {
+      atk.lastAttackAt = now
+      atk.item = null
+      this.events.onPrivateState(attackerId, [...atk.stack], atk.score, null)
+      const trap: PlacedTrap = {
+        id: nextTrapId(),
+        ownerId: attackerId,
+        x: ap.x,
+        z: ap.z,
+      }
+      this.traps.push(trap)
+      this.events.onTrapPlaced(trap)
+      return
+    }
+
+    if (!isStunBat(atk.item)) return
 
     atk.lastAttackAt = now
 
@@ -378,16 +526,14 @@ export class GameSim {
 
     const vic = this.players.get(bestId)!
     // Drop only backpack numbers: min(4, stack). Never knock off victim hand item.
-    // If a stun somehow sits in stack, leave it there (items are not backpack loot).
     const dropN = Math.min(STUN_DROP_MAX, vic.stack.length)
     const dropped: GroundCard[] = []
     const vp = poses.get(bestId)!
     let removed = 0
-    // Walk from top; skip non-number (stun) cards in backpack
+    // Walk from top; strip stray hand-items if they leaked into backpack
     for (let guard = 0; guard < 32 && removed < dropN && vic.stack.length; guard++) {
       const top = vic.stack[vic.stack.length - 1]!
-      if (isStunBat(top)) {
-        // Should not be in backpack — strip without spawning as loot
+      if (isHandItem(top)) {
         vic.stack.pop()
         continue
       }
@@ -411,7 +557,7 @@ export class GameSim {
       })
     }
 
-    // Victim hand item (狼牙棒) is intentionally kept
+    // Victim hand item is intentionally kept
     vic.stunUntil = now + STUN_DURATION_MS
     this.events.onStunned(bestId, vic.stunUntil, STUN_DURATION_MS)
     this.events.onPrivateState(bestId, [...vic.stack], vic.score, vic.item)
@@ -475,8 +621,8 @@ export class GameSim {
       return
     }
 
-    // Item cards → hand slot only (never backpack)
-    if (isStunBat(nearest.card)) {
+    // Hand items (mace / skip) → hand slot only; one at a time (mutually exclusive)
+    if (isHandItem(nearest.card)) {
       if (p.item) {
         if (p.lastIllegalCardId !== nearest.card.id) {
           p.lastIllegalCardId = nearest.card.id
@@ -485,6 +631,8 @@ export class GameSim {
         }
         return
       }
+      // Grace after G-drop so the thrown item is not instantly reclaimed
+      if (Date.now() < p.itemPickupBlockUntil) return
       p.lastIllegalCardId = null
       this.ground = this.ground.filter((g) => g.card.id !== nearest!.card.id)
       p.item = nearest.card

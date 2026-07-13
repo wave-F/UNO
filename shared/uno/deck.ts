@@ -1,7 +1,16 @@
-import { isStunBat, type UnoCardData, type UnoColor, type UnoRank } from './types.ts'
+import {
+  isStunBat,
+  type UnoCardData,
+  type UnoColor,
+  type UnoRank,
+} from './types.ts'
 
 const COLORS: UnoColor[] = ['red', 'yellow', 'green', 'blue']
 const NUMBERS: UnoRank[] = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']
+
+/** Default field mix: mostly numbers; items are occasional. */
+export const DEFAULT_STUN_FRACTION = 0.08
+export const DEFAULT_SKIP_FRACTION = 0.08
 
 let idSeq = 0
 
@@ -29,7 +38,7 @@ function randomNumberCard(rng: () => number): UnoCardData {
   return { id: nextId(), color, rank, kind: 'number' }
 }
 
-/** Colorless special function card — not part of UNO color/stack order. */
+/** Colorless special — hand item (狼牙棒). */
 function randomStun(_rng: () => number): UnoCardData {
   return {
     id: nextId(),
@@ -39,41 +48,56 @@ function randomStun(_rng: () => number): UnoCardData {
   }
 }
 
+/** Colorless special — hand item (Skip trap). */
+function randomSkip(_rng: () => number): UnoCardData {
+  return {
+    id: nextId(),
+    color: null,
+    rank: 'skip',
+    kind: 'skip_trap',
+  }
+}
+
 /**
  * Field spawn mix.
- * Testing-friendly: ~40% stun so they appear often.
- * (Later tune stunFraction down for balance.)
+ * Default ~8% stun + ~8% skip (no forced minimums); rest numbers.
+ * Pass stunFraction:0 and skipFraction:0 for pure numbers (e.g. training dummy).
  */
 export function createRandomCards(
   count: number,
   rng = Math.random,
-  opts?: { stunFraction?: number },
+  opts?: { stunFraction?: number; skipFraction?: number },
 ): UnoCardData[] {
   if (count <= 0) return []
 
-  const stunFraction = opts?.stunFraction ?? 0.4
-  let stunCount = Math.round(count * stunFraction)
-  // Testing floors only when stun is actually wanted (fraction > 0).
-  // stunFraction: 0 must stay pure numbers (e.g. training dummy backpack).
-  if (stunFraction > 0) {
-    // At least 1 stun when spawning 2+ cards; at least 2 when initial 6+
-    if (count >= 2) stunCount = Math.max(1, stunCount)
-    if (count >= 6) stunCount = Math.max(2, stunCount)
-  } else {
-    stunCount = 0
-  }
-  stunCount = Math.min(count, stunCount)
-  const numCount = count - stunCount
+  const stunFraction = opts?.stunFraction ?? DEFAULT_STUN_FRACTION
+  const skipFraction = opts?.skipFraction ?? DEFAULT_SKIP_FRACTION
 
+  let stunCount = stunFraction > 0 ? Math.round(count * stunFraction) : 0
+  let skipCount = skipFraction > 0 ? Math.round(count * skipFraction) : 0
+
+  // Fit into count (prefer keeping numbers if over)
+  while (stunCount + skipCount > count) {
+    if (skipCount >= stunCount && skipCount > 0) skipCount--
+    else if (stunCount > 0) stunCount--
+    else break
+  }
+
+  const numCount = count - stunCount - skipCount
   const result: UnoCardData[] = []
   for (let i = 0; i < numCount; i++) result.push(randomNumberCard(rng))
   for (let i = 0; i < stunCount; i++) result.push(randomStun(rng))
+  for (let i = 0; i < skipCount; i++) result.push(randomSkip(rng))
 
   return shuffle(result, rng)
 }
 
 export function createStunBat(): UnoCardData {
   return { id: nextId(), color: null, rank: 'stun', kind: 'stun_bat' }
+}
+
+export function createSkipTrap(): UnoCardData {
+  return { id: nextId(), color: null, rank: 'skip', kind: 'skip_trap' }
 }
 
 export { isStunBat }

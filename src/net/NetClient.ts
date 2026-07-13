@@ -7,6 +7,7 @@ import {
   type PlayerPose,
   type PublicPlayer,
   type RoomPhase,
+  type PlacedTrapWire,
   type ScoreEntry,
   type ServerMessage,
 } from '../../shared/protocol'
@@ -35,6 +36,7 @@ export type NetClientEvents = {
     yourItem: UnoCardData | null
     scores: ScoreEntry[]
     playerStacks: { playerId: string; stack: UnoCardData[] }[]
+    traps: PlacedTrapWire[]
     matchEndsAt?: number
     winScore?: number
   }) => void
@@ -104,6 +106,13 @@ export type NetClientEvents = {
   playerStunned: (playerId: string, until: number, durationMs: number) => void
   attackHit: (attackerId: string, victimId: string, dropped: number) => void
   attackMiss: () => void
+  trapPlaced: (trap: PlacedTrapWire) => void
+  trapRemoved: (trapId: string, reason: 'triggered' | 'cleared') => void
+  trapTriggered: (info: {
+    trapId: string
+    ownerId: string
+    victimId: string
+  }) => void
   error: (code: string, message: string) => void
   pong: (rttMs: number) => void
 }
@@ -226,6 +235,12 @@ export class NetClient {
   attack(yaw: number): void {
     if (!this.isPlaying) return
     this.send({ type: 'attack', yaw })
+  }
+
+  /** Drop hand item onto ground in front. */
+  discardItem(yaw: number): void {
+    if (!this.isPlaying) return
+    this.send({ type: 'discard_item', yaw })
   }
 
   leaveRoom(): void {
@@ -382,6 +397,7 @@ export class NetClient {
           yourItem: msg.yourItem ?? null,
           scores: msg.scores,
           playerStacks: msg.playerStacks ?? [],
+          traps: msg.traps ?? [],
           matchEndsAt: msg.matchEndsAt,
           winScore: msg.winScore,
         })
@@ -507,6 +523,19 @@ export class NetClient {
         break
       case 'attack_miss':
         this.emit('attackMiss')
+        break
+      case 'trap_placed':
+        this.emit('trapPlaced', msg.trap)
+        break
+      case 'trap_removed':
+        this.emit('trapRemoved', msg.trapId, msg.reason)
+        break
+      case 'trap_triggered':
+        this.emit('trapTriggered', {
+          trapId: msg.trapId,
+          ownerId: msg.ownerId,
+          victimId: msg.victimId,
+        })
         break
       case 'pong': {
         const rtt =

@@ -139,10 +139,13 @@ export class GameHud {
       return
     }
     this.itemEl.hidden = false
-    this.itemEl.textContent =
-      item.kind === 'stun_bat' || item.rank === 'stun'
-        ? '🔨 手持：狼牙棒（左键挥击）'
-        : '🎒 手持道具'
+    if (item.kind === 'stun_bat' || item.rank === 'stun') {
+      this.itemEl.textContent = '🔨 狼牙棒 · 左键挥击 · G 丢弃'
+    } else if (item.kind === 'skip_trap' || item.rank === 'skip') {
+      this.itemEl.textContent = '⊘ Skip陷阱 · 左键布置 · G 丢弃'
+    } else {
+      this.itemEl.textContent = '🎒 手持道具 · G 丢弃'
+    }
   }
 
   setScores(
