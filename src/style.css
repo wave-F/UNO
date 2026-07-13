@@ -1,0 +1,121 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #1a1a2e;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+#hud {
+  position: fixed;
+  left: 16px;
+  top: 16px;
+  z-index: 10;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+  font-size: 14px;
+  line-height: 1.5;
+  pointer-events: none;
+  user-select: none;
+  max-width: min(420px, calc(100vw - 32px));
+}
+
+#hud kbd {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  font-size: 12px;
+}
+
+.hud-help {
+  opacity: 0.9;
+  margin-bottom: 6px;
+}
+
+.hud-lock {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  font-weight: 700;
+  display: inline-block;
+}
+
+.hud-home {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(234, 88, 12, 0.85);
+  font-weight: 700;
+  display: inline-block;
+}
+
+.hud-stack {
+  margin-top: 8px;
+  font-weight: 600;
+}
+
+.hud-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.card-chip {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+.card-chip.more {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+
+.hud-prompt {
+  position: fixed;
+  left: 50%;
+  bottom: 48px;
+  transform: translateX(-50%);
+  z-index: 11;
+  padding: 10px 18px;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 700;
+  text-shadow: none;
+  pointer-events: none;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  max-width: min(520px, calc(100vw - 32px));
+  text-align: center;
+}
+
+.hud-prompt.ok {
+  background: rgba(16, 185, 129, 0.92);
+  color: #fff;
+}
+
+.hud-prompt.bad {
+  background: rgba(239, 68, 68, 0.94);
+  color: #fff;
+}
