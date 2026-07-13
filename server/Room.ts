@@ -446,6 +446,7 @@ export class Room {
       traps: playing ? this.game.getTrapsSnapshot() : [],
       matchEndsAt: playing ? this.matchEndsAt : undefined,
       winScore: playing ? MATCH_WIN_SCORE : undefined,
+      dummyActive: playing ? this.game.isTrainingDummyActive() : undefined,
     })
   }
 
@@ -528,8 +529,7 @@ export class Room {
         })
       }
     }
-    // After clients enter match: fill dummy backpack (broadcasts player_stack)
-    this.game.refillTrainingDummy()
+    // Dummy stays off until debug_set_dummy (clients default to off on match_start)
     return { ok: true }
   }
 
@@ -664,6 +664,14 @@ export class Room {
     this.game.debugGiveItem(seatId, kind)
   }
 
+  /** Dev: fully spawn/despawn training dummy (combat + backpack + poses). */
+  handleDebugSetDummy(seatId: string, active: boolean): void {
+    if (this.phase !== 'playing') return
+    if (!this.seats.has(seatId)) return
+    const nowActive = this.game.setTrainingDummyActive(active)
+    this.broadcast({ type: 'dummy_state', active: nowActive })
+  }
+
   handleSlide(seatId: string, yaw: number): void {
     if (this.phase !== 'playing') return
     if (this.game.isActionLocked(seatId)) return
@@ -678,18 +686,20 @@ export class Room {
     this.game.tryDiscardItem(seatId, yaw, poses)
   }
 
-  /** Connected seats + training dummy for combat / item throws. */
+  /** Connected seats + training dummy (only when debug-spawned) for combat. */
   private collectPoseMap(): Map<string, { x: number; y: number; z: number }> {
     const poses = new Map<string, { x: number; y: number; z: number }>()
     for (const s of this.seats.values()) {
       if (!s.connected || !s.pose) continue
       poses.set(s.id, { x: s.pose.x, y: s.pose.y, z: s.pose.z })
     }
-    poses.set(TRAINING_DUMMY_ID, {
-      x: 0,
-      y: TRAINING_DUMMY_Y,
-      z: 0,
-    })
+    if (this.game.isTrainingDummyActive()) {
+      poses.set(TRAINING_DUMMY_ID, {
+        x: 0,
+        y: TRAINING_DUMMY_Y,
+        z: 0,
+      })
+    }
     return poses
   }
 
@@ -888,12 +898,14 @@ export class Room {
       if (!s.connected || !s.pose) continue
       poses.set(s.id, { x: s.pose.x, y: s.pose.y, z: s.pose.z })
     }
-    // Training dummy fixed at arena center (hit target, not a seat)
-    poses.set(TRAINING_DUMMY_ID, {
-      x: 0,
-      y: TRAINING_DUMMY_Y,
-      z: 0,
-    })
+    // Training dummy only when debug-spawned (hit target + bot aggro)
+    if (this.game.isTrainingDummyActive()) {
+      poses.set(TRAINING_DUMMY_ID, {
+        x: 0,
+        y: TRAINING_DUMMY_Y,
+        z: 0,
+      })
+    }
 
     // Bots move (+ optional stun swing), then sim uses final poses
     for (const [id, bot] of this.bots) {
@@ -915,14 +927,15 @@ export class Room {
         yaw: s.pose.yaw,
       })
     }
-    // Broadcast dummy so clients can sync stun / backpack if needed
-    list.push({
-      id: TRAINING_DUMMY_ID,
-      x: 0,
-      y: TRAINING_DUMMY_Y,
-      z: 0,
-      yaw: 0,
-    })
+    if (this.game.isTrainingDummyActive()) {
+      list.push({
+        id: TRAINING_DUMMY_ID,
+        x: 0,
+        y: TRAINING_DUMMY_Y,
+        z: 0,
+        yaw: 0,
+      })
+    }
     if (list.length) {
       this.broadcast({ type: 'world_state', t: Date.now(), poses: list })
     }

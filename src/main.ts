@@ -70,6 +70,16 @@ game
         kind: 'ok',
       })
     })
+    game.setDummyStateListener((active) => {
+      hud.setDummyButtonState(active)
+      hud.handleFeedback({
+        type: 'toast',
+        text: active
+          ? '已生成木头人（可打 · 有背包）'
+          : '已移除木头人（逻辑与模型均关闭）',
+        kind: 'ok',
+      })
+    })
     hud.setToggleDummyListener(() => {
       if (!net.isPlaying) {
         hud.handleFeedback({
@@ -80,7 +90,7 @@ game
         return
       }
       const next = !game.isDummyVisible()
-      if (!game.setDummyVisible(next)) {
+      if (!game.requestDummyActive(next)) {
         hud.handleFeedback({
           type: 'toast',
           text: '木头人暂不可用',
@@ -88,12 +98,7 @@ game
         })
         return
       }
-      hud.setDummyButtonState(next)
-      hud.handleFeedback({
-        type: 'toast',
-        text: next ? '已显示木头人（场地中央）' : '已隐藏木头人',
-        kind: 'ok',
-      })
+      // UI updates when server broadcasts dummy_state
     })
     game.start()
   })

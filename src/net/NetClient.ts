@@ -39,7 +39,9 @@ export type NetClientEvents = {
     traps: PlacedTrapWire[]
     matchEndsAt?: number
     winScore?: number
+    dummyActive?: boolean
   }) => void
+  dummyState: (active: boolean) => void
   roomState: (info: {
     roomCode: string
     hostId: string
@@ -301,6 +303,12 @@ export class NetClient {
     this.send({ type: 'debug_give_item', kind })
   }
 
+  /** Dev/test: fully spawn/despawn training dummy on server. */
+  debugSetDummy(active: boolean): void {
+    if (!this.isPlaying) return
+    this.send({ type: 'debug_set_dummy', active })
+  }
+
   leaveRoom(): void {
     this.send({ type: 'leave_room' })
     this.resetRoomState()
@@ -458,6 +466,7 @@ export class NetClient {
           traps: msg.traps ?? [],
           matchEndsAt: msg.matchEndsAt,
           winScore: msg.winScore,
+          dummyActive: msg.dummyActive,
         })
         this.emit('roomState', {
           roomCode: msg.roomCode,
@@ -520,6 +529,9 @@ export class NetClient {
           winScore: msg.winScore,
           message: msg.message,
         })
+        break
+      case 'dummy_state':
+        this.emit('dummyState', !!msg.active)
         break
       case 'player_joined':
         this.emit('playerJoined', msg.player)

@@ -17,7 +17,8 @@
   - **狼牙棒**：场上/手持为棒网格；左键挥击 → 眩晕 1.5s、掉背包顶至多 4 张
   - **Skip 陷阱**：场上为 Skip 牌面；左键布置到脚下（全员可见、无时限）；**他人**踩中眩晕 2s；**自己不踩中**
 - **不掉对方手持道具**；**眩晕期间不可捡牌/卸货/偷家**
-- **木头人**（场地中央）：可打测试靶，背后叠测试牌，眩晕后自动补牌
+- **木头人**（测试靶）：**默认不在场**；左侧按钮请求服务器 `debug_set_dummy` 才生成（逻辑+模型+背包+可打）；隐藏则彻底移除
+- **UNO 时刻**：某玩家老家分首次进入「距胜利还差 ≤5 张」时，全房顶部一次性横幅（`uno_moment`）
 - **老家电网**：主人站在自己老家平台内 → 四周全员可见电网；**非主人踩入即触电死亡**（全掉落背包+手持），**5s** 后自家重生；有电网时不可偷该家
 - **回合胜负**：2 分钟；先把牌送达老家 **20 张**者胜；超时则老家张数最多者胜（`shared/config/match.ts`）
 
@@ -67,8 +68,9 @@
 | 攻击 | 棒：锥形命中消耗；Skip：`trap_placed` 布置脚下，踩中 `trap_triggered` |
 | 背上牌 | `private_state` + 全员 `player_stack` |
 | 老家 | 四角 0–3；仅本家卸货；主人在家 → 电网 |
-| 人数 | 最多 4（+ 非座位木头人 `training_dummy`） |
+| 人数 | 最多 4；木头人 `training_dummy` **非座位**，仅 debug 开启时存在 |
 | 断线 | 座位保留 15s，`sessionToken` 可重连 |
+| 远端初始位姿 | 大厅无 `world_state` 时，远程角色（含 Bot）生成在各自 `homeIndex` 角落，避免落在原点 |
 
 ---
 
@@ -96,24 +98,26 @@ Uno/
 
 | 文件 | 作用 |
 |------|------|
-| `shared/protocol.ts` | 消息类型；`attack` / `player_stunned` / `home_fences` / `player_died` / `player_respawned` / `trap_*` 等 |
+| `shared/protocol.ts` | 消息类型；`attack` / `player_stunned` / `home_fences` / `player_died` / `player_respawned` / `trap_*` / `uno_moment` / `debug_set_dummy` / `dummy_state` 等 |
 | `shared/config/home.ts` | 四角老家、`HOME_FENCE_DEATH_MS`、`isInsideHomeSlot` |
 | `shared/config/movement.ts` | 背牌减速、基础移速（前后端共用） |
 | `shared/config/dummy.ts` | 木头人 id / 高度 / 补牌张数 |
+| `shared/config/match.ts` | 时长、`MATCH_WIN_SCORE`、`MATCH_UNO_REMAINING` |
 | `shared/uno/types.ts` | 牌型、`isStunBat` / `isSkipTrap` / `isHandItem`、眩晕与陷阱常量 |
 | `shared/uno/deck.ts` | 刷牌；`stunFraction` / `skipFraction`；均为 0 时纯数字 |
-| `server/GameSim.ts` | 场上牌、背包、道具、攻击、Skip 陷阱、**老家电网/死亡/重生**、木头人 |
+| `server/GameSim.ts` | 场上牌、背包、道具、攻击、Skip 陷阱、**老家电网/死亡/重生**、木头人开关（`setTrainingDummyActive`） |
 | `server/Bot.ts` | 机器人寻路、延迟挥棒、近敌布置 Skip；**避开有电网的家** |
-| `server/Room.ts` | 房间 tick、位姿、死亡锁定 pose、重生 snap；转发 `home_fences` / died / respawned |
+| `server/Room.ts` | 房间 tick、位姿、死亡锁定 pose、重生 snap；`uno_moment`；木头人 pose 仅 active 时注入 |
 | `src/game/uno/maceVisual.ts` | 程序化狼牙棒网格 |
 | `src/entities/HomeBase.ts` | 老家平台、牌堆、**电网视觉** |
 | `src/entities/SkipTrapMarker.ts` | 已布置 Skip 陷阱地面标记 |
 | `src/systems/SkipTrapSystem.ts` | 客户端陷阱增删/动画 |
-| `src/entities/TrainingDummy.ts` | 中央木头人 + 受击/眩晕表现 |
+| `src/entities/TrainingDummy.ts` | 中央木头人 + 受击/眩晕表现（仅服务器 active 时挂场景） |
+| `src/systems/RemotePlayerSystem.ts` | 远端/机器人插值；创建时按 home 落角，避免站中心 |
 | `src/entities/AttackRangeVisual.ts` | 身前攻击扇形（仅狼牙棒） |
 | `src/entities/StunFx.ts` | 头顶眩晕星星 |
 | `src/entities/Player.ts` | 本地/远端豆人 + 手持棒/Skip 牌 + 背牌 |
-| `src/ui/GameHud.ts` | HUD + **触电死亡遮罩倒计时** |
+| `src/ui/GameHud.ts` | HUD + 触电死亡遮罩 + **UNO 时刻顶栏** + 木头人调试按钮 |
 
 ### npm scripts
 
@@ -158,6 +162,14 @@ npm run build     # tsc + vite build
 - 时长 `MATCH_DURATION_MS`（默认 2 分钟）、达标 `MATCH_WIN_SCORE`（默认 20，仅计老家）  
 - `match_start` 带 `endsAt` / `winScore`；结束广播 `match_end` 并回大厅  
 - HUD 倒计时 + 结算弹窗  
+- **UNO 时刻**：送达后分数首次满足 `score >= WIN - MATCH_UNO_REMAINING` 且未获胜 → 每人每局一次 `uno_moment` 顶栏  
+
+## 木头人（调试）
+
+- **默认关闭**：开局不注册 `training_dummy`，不注入 pose，机器人不可打到  
+- 客户端左侧「显示木头人」→ `debug_set_dummy { active }` → `GameSim.setTrainingDummyActive` → 广播 `dummy_state`  
+- 开启：中央可打靶 + 补测试数字牌；关闭：删玩家、清 pose、清补牌计时与爆落清理  
+- 重连 `welcome.dummyActive` 同步状态  
 
 ---
 

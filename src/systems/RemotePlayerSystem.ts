@@ -1,14 +1,20 @@
 import * as THREE from 'three'
 import { TRAINING_DUMMY_ID } from '../../shared/config/dummy'
+import { getHomeSlot } from '../../shared/config/home'
 import type { PlayerPose, PublicPlayer } from '../../shared/protocol'
 import type { UnoCardData } from '../../shared/uno/types'
+import { movementConfig as cfg } from '../config/movement'
 import { RemotePlayer } from '../entities/RemotePlayer'
+
+/** Standing height on home platform (matches server bot approx). */
+const REMOTE_HOME_STAND_Y = cfg.capsuleHalfHeight + cfg.capsuleRadius + 0.25
 
 /** Manages remote avatars from room_state + world_state. */
 export class RemotePlayerSystem {
   readonly group = new THREE.Group()
   private remotes = new Map<string, RemotePlayer>()
   private names = new Map<string, string>()
+  private homeById = new Map<string, number>()
   /** Last known backpack per player (applied when remote mesh is created). */
   private stacks = new Map<string, UnoCardData[]>()
   private items = new Map<string, UnoCardData>()
@@ -34,8 +40,11 @@ export class RemotePlayerSystem {
       if (p.id === this.localId) continue
       alive.add(p.id)
       this.names.set(p.id, p.name)
+      if (typeof p.homeIndex === 'number') {
+        this.homeById.set(p.id, p.homeIndex)
+      }
       if (!this.remotes.has(p.id) && p.connected) {
-        this.add(p.id, p.name)
+        this.add(p.id, p.name, p.homeIndex)
       }
       // Keep mesh while reconnecting grace (still in list)
       if (!p.connected && this.remotes.has(p.id)) {
@@ -54,7 +63,7 @@ export class RemotePlayerSystem {
       let remote = this.remotes.get(pose.id)
       if (!remote) {
         const name = this.names.get(pose.id) ?? pose.id.slice(0, 6)
-        remote = this.add(pose.id, name)
+        remote = this.add(pose.id, name, this.homeById.get(pose.id))
       }
       remote.pushPose(pose.x, pose.y, pose.z, pose.yaw)
     }
@@ -173,6 +182,7 @@ export class RemotePlayerSystem {
   clear(): void {
     for (const id of [...this.remotes.keys()]) this.remove(id)
     this.names.clear()
+    this.homeById.clear()
     this.stacks.clear()
     this.items.clear()
     this.localId = null
@@ -182,10 +192,17 @@ export class RemotePlayerSystem {
     this.clear()
   }
 
-  private add(id: string, name: string): RemotePlayer {
+  private add(id: string, name: string, homeIndex?: number): RemotePlayer {
     const remote = new RemotePlayer(id, name, this.colorSeq++)
     this.remotes.set(id, remote)
     this.group.add(remote.root)
+    // Lobby / before first world_state: sit at corner home, not world origin
+    const slot =
+      typeof homeIndex === 'number' ? homeIndex : this.homeById.get(id)
+    if (typeof slot === 'number') {
+      const sp = getHomeSlot(slot).spawn
+      remote.pushPose(sp.x, REMOTE_HOME_STAND_Y, sp.z, 0)
+    }
     const held = this.stacks.get(id)
     if (held?.length) remote.player.setHeldStack(held)
     const item = this.items.get(id)
@@ -199,6 +216,7 @@ export class RemotePlayerSystem {
     this.group.remove(r.root)
     r.dispose()
     this.remotes.delete(id)
+    this.homeById.delete(id)
     this.stacks.delete(id)
     this.items.delete(id)
   }

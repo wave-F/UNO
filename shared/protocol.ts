@@ -126,6 +126,11 @@ export type ClientMessage =
       type: 'debug_give_item'
       kind: 'stun_bat' | 'skip_trap'
     }
+  | {
+      /** Dev/test: spawn / despawn training dummy (logic + model). */
+      type: 'debug_set_dummy'
+      active: boolean
+    }
 
 // ── Server → Client ─────────────────────────────────────────
 
@@ -165,6 +170,13 @@ export type ServerMessage =
       /** When phase=playing: round end epoch ms / win target. */
       matchEndsAt?: number
       winScore?: number
+      /** When phase=playing: whether training dummy is in the arena. */
+      dummyActive?: boolean
+    }
+  | {
+      /** Training dummy fully on/off (not just client mesh). */
+      type: 'dummy_state'
+      active: boolean
     }
   | {
       type: 'room_state'
@@ -409,6 +421,7 @@ export function isClientMessage(data: unknown): data is ClientMessage {
     t === 'attack' ||
     t === 'discard_item' ||
     t === 'slide' ||
-    t === 'debug_give_item'
+    t === 'debug_give_item' ||
+    t === 'debug_set_dummy'
   )
 }

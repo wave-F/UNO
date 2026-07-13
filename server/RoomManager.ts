@@ -125,6 +125,11 @@ export class RoomManager {
         ctx.room.handleDebugGiveItem(ctx.seatId, kind)
         break
       }
+      case 'debug_set_dummy': {
+        if (!ctx.room || !ctx.seatId) return
+        ctx.room.handleDebugSetDummy(ctx.seatId, !!msg.active)
+        break
+      }
       default:
         send(ws, { type: 'error', code: 'bad_message', message: '未知消息类型' })
     }

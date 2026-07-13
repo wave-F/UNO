@@ -193,6 +193,8 @@ export class GameSim {
   private started = false
   /** When > 0, refill dummy backpack after this epoch ms. */
   private dummyRefillAt = 0
+  /** Off by default; debug button spawns hit-target + backpack. */
+  private dummyActive = false
   /** Last broadcast fence set (slot indices). */
   private lastFenceActive: number[] = []
   private readonly events: GameSimEvents
@@ -207,22 +209,54 @@ export class GameSim {
     this.started = true
     this.spawnTimer = 0
     this.dummyRefillAt = 0
-    // Register dummy hit target; stack filled after match_start so clients see it.
-    if (!this.players.has(TRAINING_DUMMY_ID)) {
-      this.addPlayer(TRAINING_DUMMY_ID, 0)
-    }
+    this.dummyActive = false
+    // Dummy stays off until a client enables it (debug button).
+    this.players.delete(TRAINING_DUMMY_ID)
     this.spawnCards(cardSpawnConfig.initialCount)
+  }
+
+  isTrainingDummyActive(): boolean {
+    return this.dummyActive
+  }
+
+  /**
+   * Fully spawn or despawn the training dummy (hit target, backpack, refill).
+   * Returns the resulting active state.
+   */
+  setTrainingDummyActive(active: boolean): boolean {
+    if (!this.started) return false
+    if (active) {
+      if (!this.players.has(TRAINING_DUMMY_ID)) {
+        this.addPlayer(TRAINING_DUMMY_ID, 0)
+      }
+      this.dummyActive = true
+      this.refillTrainingDummy()
+      return true
+    }
+    this.dummyActive = false
+    this.dummyRefillAt = 0
+    const p = this.players.get(TRAINING_DUMMY_ID)
+    if (p) {
+      p.stack = []
+      p.item = null
+      p.stunUntil = 0
+      this.events.onPrivateState(TRAINING_DUMMY_ID, [], p.score, null)
+      this.players.delete(TRAINING_DUMMY_ID)
+    } else {
+      this.events.onPrivateState(TRAINING_DUMMY_ID, [], 0, null)
+    }
+    this.clearStunDropCards()
+    this.emitScores()
+    return false
   }
 
   /** Stationary target at arena center for stun testing. */
   ensureTrainingDummy(): void {
-    if (!this.players.has(TRAINING_DUMMY_ID)) {
-      this.addPlayer(TRAINING_DUMMY_ID, 0)
-    }
-    this.refillTrainingDummy()
+    this.setTrainingDummyActive(true)
   }
 
   refillTrainingDummy(): void {
+    if (!this.dummyActive) return
     const p = this.players.get(TRAINING_DUMMY_ID)
     if (!p) return
     // Remove previous stun-drop cards so the arena does not pile up forever
@@ -294,6 +328,7 @@ export class GameSim {
     this.spawnTimer = 0
     this.started = false
     this.dummyRefillAt = 0
+    this.dummyActive = false
     // Drop dummy so startMatch can re-add cleanly
     this.players.delete(TRAINING_DUMMY_ID)
     for (const p of this.players.values()) {
@@ -463,7 +498,11 @@ export class GameSim {
       this.tryInteract(playerId, pose.x, pose.z)
     }
 
-    if (this.dummyRefillAt > 0 && Date.now() >= this.dummyRefillAt) {
+    if (
+      this.dummyActive &&
+      this.dummyRefillAt > 0 &&
+      Date.now() >= this.dummyRefillAt
+    ) {
       this.dummyRefillAt = 0
       this.refillTrainingDummy()
     }

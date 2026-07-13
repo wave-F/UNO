@@ -176,9 +176,17 @@ export class Game {
           this.remotes.applyPlayerStacks(info.playerStacks ?? [])
           this.trapSystem?.setFromSnapshot(info.traps ?? [])
           this.onMatchClock?.(info.matchEndsAt ?? null, info.winScore ?? 20)
+          if (info.dummyActive) {
+            const dummyStack = (info.playerStacks ?? []).find(
+              (e) => e.playerId === TRAINING_DUMMY_ID,
+            )
+            if (dummyStack) this.pendingDummyStack = [...dummyStack.stack]
+          }
+          this.applyDummyActive(!!info.dummyActive)
+          this.onDummyState?.(!!info.dummyActive)
         } else {
           this.matchLive = false
-          this.removeTrainingDummy()
+          this.applyDummyActive(false)
           this.trapSystem?.clear()
           this.onMatchClock?.(null, 20)
           // Lobby: still stand at your corner
@@ -195,7 +203,7 @@ export class Game {
         if (info.phase === 'lobby' && this.matchLive) {
           // Match ended elsewhere / returned to lobby
           this.matchLive = false
-          this.removeTrainingDummy()
+          this.applyDummyActive(false)
           this.trapSystem?.clear()
           this.onMatchClock?.(null, 20)
         }
@@ -215,6 +223,12 @@ export class Game {
         this.playerCtrl.clearDeath()
         this.onDeath?.(null)
         this.onMatchClock?.(meta.endsAt, meta.winScore)
+        this.applyDummyActive(false)
+      }),
+      net.on('dummyState', (active) => {
+        if (!this.matchLive && active) return
+        this.applyDummyActive(active)
+        this.onDummyState?.(active)
       }),
       net.on('unoMoment', (info) => {
         if (!this.matchLive) return
@@ -222,7 +236,7 @@ export class Game {
       }),
       net.on('matchEnd', (info) => {
         this.matchLive = false
-        this.removeTrainingDummy()
+        this.applyDummyActive(false)
         this.trapSystem?.clear()
         this.remotes.clearAllStacks()
         this.homeYard.clearAllPiles()
@@ -488,14 +502,14 @@ export class Game {
     this.cardSystem.applyGroundSnapshot(ground)
     this.applyLocalInventory(stack, score, item)
     this.onScores?.(scores)
-    this.spawnTrainingDummy()
+    // Dummy only after server dummy_state active
+    this.applyDummyActive(false)
   }
 
   private spawnTrainingDummy(): void {
     this.removeTrainingDummy()
     this.trainingDummy = new TrainingDummy()
-    // Hidden by default; left-side debug button can show it
-    this.trainingDummy.root.visible = false
+    this.trainingDummy.root.visible = true
     this.scene.add(this.trainingDummy.root)
     if (this.pendingDummyStack) {
       this.trainingDummy.setStack(this.pendingDummyStack)
@@ -508,21 +522,38 @@ export class Game {
     this.scene.remove(this.trainingDummy.root)
     this.trainingDummy.dispose()
     this.trainingDummy = null
+    this.pendingDummyStack = null
   }
 
-  /** Toggle training dummy mesh (server target still exists when match live). */
-  setDummyVisible(visible: boolean): boolean {
-    if (!this.trainingDummy) {
-      if (this.matchLive) this.spawnTrainingDummy()
-      else return false
+  /**
+   * Apply authoritative dummy presence (mesh + local flag).
+   * Server owns hit target / backpack; inactive means fully gone.
+   */
+  applyDummyActive(active: boolean): void {
+    if (!active) {
+      this.removeTrainingDummy()
+      return
     }
-    if (!this.trainingDummy) return false
-    this.trainingDummy.root.visible = visible
+    if (!this.matchLive) return
+    if (!this.trainingDummy) this.spawnTrainingDummy()
+    else this.trainingDummy.root.visible = true
+  }
+
+  /** Request server spawn/despawn (logic + model for all clients). */
+  requestDummyActive(active: boolean): boolean {
+    if (!this.matchLive || !this.net?.isPlaying) return false
+    this.net.debugSetDummy(active)
     return true
   }
 
   isDummyVisible(): boolean {
-    return !!this.trainingDummy?.root.visible
+    return !!this.trainingDummy
+  }
+
+  private onDummyState: ((active: boolean) => void) | null = null
+
+  setDummyStateListener(cb: (active: boolean) => void): void {
+    this.onDummyState = cb
   }
 
   private applyLocalInventory(
