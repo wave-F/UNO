@@ -77,6 +77,15 @@ canvas {
   display: inline-block;
 }
 
+.hud-item {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(124, 58, 237, 0.88);
+  font-weight: 700;
+  display: inline-block;
+}
+
 .hud-stack {
   margin-top: 8px;
   font-weight: 600;

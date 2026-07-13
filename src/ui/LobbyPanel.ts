@@ -31,6 +31,8 @@ export class LobbyPanel {
   private roomMetaEl: HTMLElement
   private roomCodeBigEl: HTMLElement
   private startBtn: HTMLButtonElement
+  private addBotBtn: HTMLButtonElement
+  private rmBotBtn: HTMLButtonElement
   private actionsLobby: HTMLElement
   private actionsRoom: HTMLElement
   private codeBlock: HTMLElement
@@ -69,7 +71,7 @@ export class LobbyPanel {
           <button type="button" id="lobby-join">加入房间</button>
           <button type="button" id="lobby-offline" class="ghost">单机游玩</button>
         </div>
-        <p class="lobby-quick-hint">开发用：两浏览器都点「本地双开测试」→ 自动进房 ${DEV_QUICK_ROOM_CODE} 并自动开局，不用填房号、不用点开始。</p>
+        <p class="lobby-quick-hint">开发用：点「本地双开测试」→ 房 ${DEV_QUICK_ROOM_CODE} 自动开局并加 1 个机器人；也可用「加机器人」单人测。</p>
 
         <div id="lobby-code-block" class="lobby-code-block" hidden>
           <div class="lobby-code-label">房间码（发给同伴）</div>
@@ -81,6 +83,8 @@ export class LobbyPanel {
 
         <div class="lobby-actions" id="lobby-actions-room" hidden>
           <button type="button" id="lobby-start">开始游戏</button>
+          <button type="button" id="lobby-add-bot" class="ghost">加机器人</button>
+          <button type="button" id="lobby-rm-bot" class="ghost">减机器人</button>
           <button type="button" id="lobby-leave" class="ghost">离开房间</button>
         </div>
 
@@ -102,6 +106,8 @@ export class LobbyPanel {
     this.roomMetaEl = this.root.querySelector('#lobby-room-meta')!
     this.roomCodeBigEl = this.root.querySelector('#lobby-code-big')!
     this.startBtn = this.root.querySelector('#lobby-start')!
+    this.addBotBtn = this.root.querySelector('#lobby-add-bot')!
+    this.rmBotBtn = this.root.querySelector('#lobby-rm-bot')!
     this.actionsLobby = this.root.querySelector('#lobby-actions-entry')!
     this.actionsRoom = this.root.querySelector('#lobby-actions-room')!
     this.codeBlock = this.root.querySelector('#lobby-code-block')!
@@ -119,6 +125,8 @@ export class LobbyPanel {
       this.opts.onOfflinePlay()
     })
     this.startBtn.addEventListener('click', () => this.net.startGame())
+    this.addBotBtn.addEventListener('click', () => this.net.addBot())
+    this.rmBotBtn.addEventListener('click', () => this.net.removeBot())
     this.root.querySelector('#lobby-leave')!.addEventListener('click', () => {
       this.net.leaveRoom()
       this.net.disconnect()
@@ -277,6 +285,11 @@ export class LobbyPanel {
     this.startBtn.title = this.net.isHost
       ? '进入房间后即可开始（不必等准备）'
       : '仅房主可开始'
+    const host = this.net.isHost
+    this.addBotBtn.disabled = !host
+    this.rmBotBtn.disabled = !host
+    this.addBotBtn.title = host ? '添加服务器 AI（可单人测试）' : '仅房主'
+    this.rmBotBtn.title = host ? '移除一名机器人' : '仅房主'
   }
 
   private renderPlayers(players: PublicPlayer[]): void {
@@ -293,9 +306,10 @@ export class LobbyPanel {
       const li = document.createElement('li')
       const you = p.id === this.net.playerId ? ' ·你' : ''
       const host = p.isHost ? ' ·房主' : ''
+      const bot = p.isBot ? ' ·机器人' : ''
       const offline = p.connected ? '' : ' ·断线'
       const home = corner[p.homeIndex ?? 0] ?? '西南'
-      li.textContent = `${p.name}${you}${host} ·${home}${offline}`
+      li.textContent = `${p.name}${you}${host}${bot} ·${home}${offline}`
       if (!p.connected) li.className = 'muted'
       this.playersEl.appendChild(li)
     }

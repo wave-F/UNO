@@ -1,7 +1,9 @@
 import * as THREE from 'three'
 import {
   UNO_COLOR_HEX,
+  STUN_CARD_HEX,
   cardLabel,
+  isStunBat,
   rankLabel,
   type UnoCardData,
 } from './types'
@@ -16,13 +18,19 @@ export function makeFaceTexture(card: UnoCardData): THREE.CanvasTexture {
   canvas.height = 384
   const ctx = canvas.getContext('2d')!
 
-  const bg = `#${UNO_COLOR_HEX[card.color].toString(16).padStart(6, '0')}`
+  const stun = isStunBat(card)
+  const hex = stun
+    ? STUN_CARD_HEX
+    : card.color
+      ? UNO_COLOR_HEX[card.color]
+      : 0x334155
+  const bg = `#${hex.toString(16).padStart(6, '0')}`
 
   ctx.fillStyle = bg
   roundRect(ctx, 0, 0, 256, 384, 24)
   ctx.fill()
 
-  ctx.strokeStyle = '#fff'
+  ctx.strokeStyle = stun ? '#fbbf24' : '#fff'
   ctx.lineWidth = 10
   roundRect(ctx, 14, 14, 228, 356, 18)
   ctx.stroke()
@@ -32,15 +40,20 @@ export function makeFaceTexture(card: UnoCardData): THREE.CanvasTexture {
   ctx.ellipse(128, 192, 78, 110, 0, 0, Math.PI * 2)
   ctx.fill()
 
-  ctx.fillStyle = bg
+  ctx.fillStyle = stun ? '#7c3aed' : bg
   ctx.font = 'bold 96px system-ui, sans-serif'
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  ctx.fillText(rankLabel(card.rank), 128, 192)
+  const center = stun ? '晕' : rankLabel(card.rank)
+  ctx.fillText(center, 128, 192)
 
-  ctx.fillStyle = '#fff'
-  ctx.font = 'bold 36px system-ui, sans-serif'
+  ctx.fillStyle = stun ? '#fbbf24' : '#fff'
+  ctx.font = 'bold 28px system-ui, sans-serif'
   ctx.fillText(cardLabel(card), 128, 48)
+  if (stun) {
+    ctx.font = 'bold 22px system-ui, sans-serif'
+    ctx.fillText('左键挥击', 128, 320)
+  }
 
   const tex = new THREE.CanvasTexture(canvas)
   tex.colorSpace = THREE.SRGBColorSpace
@@ -56,12 +69,13 @@ function roundRect(
   h: number,
   r: number,
 ): void {
+  // Clockwise rounded rect (each arcTo: end of edge → next corner control).
   ctx.beginPath()
   ctx.moveTo(x + r, y)
-  ctx.arcTo(x + w, y, x + w, y + h, r)
-  ctx.arcTo(x + w, y + h, x, y + h, r)
-  ctx.arcTo(x, y + h, x, y, r)
-  ctx.arcTo(x, y, x + w, y, r)
+  ctx.arcTo(x + w, y, x + w, y + h, r) // top edge → top-right
+  ctx.arcTo(x + w, y + h, x, y + h, r) // right edge → bottom-right
+  ctx.arcTo(x, y + h, x, y, r) // bottom edge → bottom-left
+  ctx.arcTo(x, y, x + w, y, r) // left edge → top-left
   ctx.closePath()
 }
 

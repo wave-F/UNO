@@ -16,6 +16,11 @@ import {
   type ServerMessage,
 } from '../shared/protocol.ts'
 import { getHomeSlot, HOME_SLOT_COUNT } from '../shared/config/home.ts'
+import {
+  TRAINING_DUMMY_ID,
+  TRAINING_DUMMY_Y,
+} from '../shared/config/dummy.ts'
+import { BOT_HOME_STAND_Y, BotController } from './Bot.ts'
 import { GameSim, type GroundCard } from './GameSim.ts'
 
 export type Seat = {
@@ -25,6 +30,7 @@ export type Seat = {
   ws: WebSocket | null
   connected: boolean
   ready: boolean
+  isBot: boolean
   /** Fixed corner 0–3 for this seat (join order). */
   homeIndex: number
   graceTimer: ReturnType<typeof setTimeout> | null
@@ -66,6 +72,8 @@ export class Room {
   private tickTimer: ReturnType<typeof setInterval> | null = null
   private lastTickAt = Date.now()
   private readonly game: GameSim
+  private bots = new Map<string, BotController>()
+  private botSerial = 0
   /** Called when room has no seats left. */
   onEmpty: (() => void) | null = null
 
@@ -74,8 +82,12 @@ export class Room {
     this.id = code
     this.hostId = hostId
     this.game = new GameSim({
-      onSpawn: (cards) => {
-        this.broadcast({ type: 'cards_spawned', cards: cards.map(toWire) })
+      onSpawn: (cards, opts) => {
+        this.broadcast({
+          type: 'cards_spawned',
+          cards: cards.map(toWire),
+          burstFrom: opts?.burstFrom,
+        })
       },
       onPicked: (info) => {
         this.broadcast({
@@ -112,13 +124,29 @@ export class Room {
           victimScore: info.victimScore,
         })
       },
-      onPrivateState: (playerId, stack, score) => {
-        this.sendTo(playerId, { type: 'private_state', stack, score })
+      onPrivateState: (playerId, stack, score, item) => {
+        this.sendTo(playerId, { type: 'private_state', stack, score, item })
         // Everyone sees backpack cards on avatars (same as local HeadCardDisplay)
         this.broadcast({ type: 'player_stack', playerId, stack })
+        this.broadcast({ type: 'player_item', playerId, item })
       },
       onScores: (scores) => {
         this.broadcast({ type: 'scores', scores: this.enrichScores(scores) })
+      },
+      onStunned: (playerId, until, durationMs) => {
+        this.broadcast({ type: 'player_stunned', playerId, until, durationMs })
+      },
+      onAttackHit: (attackerId, victimId, dropped) => {
+        this.broadcast({ type: 'attack_hit', attackerId, victimId, dropped })
+      },
+      onAttackMiss: (attackerId) => {
+        this.sendTo(attackerId, { type: 'attack_miss', attackerId })
+      },
+      onGroundSnapshot: (cards) => {
+        this.broadcast({
+          type: 'ground_snapshot',
+          cards: cards.map(toWire),
+        })
       },
     })
   }
@@ -135,7 +163,74 @@ export class Room {
       ready: s.ready,
       isHost: s.id === this.hostId,
       homeIndex: s.homeIndex,
+      isBot: s.isBot,
     }))
+  }
+
+  botCount(): number {
+    return this.bots.size
+  }
+
+  /** Host adds a server-side AI seat. */
+  addBot(requesterId: string): { ok: true; seat: Seat } | { error: ServerMessage } {
+    if (requesterId !== this.hostId) {
+      return {
+        error: { type: 'error', code: 'not_host', message: '只有房主可以添加机器人' },
+      }
+    }
+    if (this.seats.size >= MAX_PLAYERS) {
+      return {
+        error: {
+          type: 'error',
+          code: 'room_full',
+          message: `房间已满（${MAX_PLAYERS} 人）`,
+        },
+      }
+    }
+    this.botSerial += 1
+    const seat = this.addSeat(null, `Bot${this.botSerial}`, false, true)
+    this.bots.set(seat.id, new BotController(seat.id))
+
+    if (this.phase === 'playing') {
+      this.game.addPlayer(seat.id, seat.homeIndex)
+      const sp = getHomeSlot(seat.homeIndex).spawn
+      seat.pose = { x: sp.x, y: BOT_HOME_STAND_Y, z: sp.z, yaw: 0, seq: 0 }
+      seat.lastPoseAt = 0
+      this.ensureTick()
+    }
+
+    this.broadcast({
+      type: 'player_joined',
+      player: {
+        id: seat.id,
+        name: seat.name,
+        connected: true,
+        ready: true,
+        isHost: false,
+        homeIndex: seat.homeIndex,
+        isBot: true,
+      },
+    })
+    this.broadcastRoomState()
+    return { ok: true, seat }
+  }
+
+  /** Host removes one bot (most recently added). */
+  removeBot(requesterId: string): { ok: true } | { error: ServerMessage } {
+    if (requesterId !== this.hostId) {
+      return {
+        error: { type: 'error', code: 'not_host', message: '只有房主可以移除机器人' },
+      }
+    }
+    const botIds = [...this.bots.keys()]
+    if (!botIds.length) {
+      return {
+        error: { type: 'error', code: 'bad_message', message: '没有可移除的机器人' },
+      }
+    }
+    const id = botIds[botIds.length - 1]!
+    this.removeSeat(id, 'kicked')
+    return { ok: true }
   }
 
   findSeatByToken(token: string): Seat | undefined {
@@ -193,7 +288,8 @@ export class Room {
     if (!seat) return
     this.game.addPlayer(seat.id, seat.homeIndex)
     const sp = getHomeSlot(seat.homeIndex).spawn
-    seat.pose = { x: sp.x, y: sp.y, z: sp.z, yaw: 0, seq: 0 }
+    const y = seat.isBot ? BOT_HOME_STAND_Y : sp.y
+    seat.pose = { x: sp.x, y, z: sp.z, yaw: 0, seq: 0 }
     seat.lastPoseAt = 0
     this.ensureTick()
   }
@@ -224,19 +320,24 @@ export class Room {
   sendWelcome(ws: WebSocket, seat: Seat): void {
     const st = this.game.getPlayerState(seat.id)
     const playing = this.phase === 'playing'
+    // Reconnect hygiene: drop leftover stun piles so refresh feels clean for testing
+    if (playing) {
+      this.game.clearStunDropCards()
+    }
     send(ws, {
       type: 'welcome',
       playerId: seat.id,
       sessionToken: seat.sessionToken,
       protocolVersion: PROTOCOL_VERSION,
       players: this.listPlayers(),
-      roomId: this.id,
       roomCode: this.code,
+      roomId: this.id,
       hostId: this.hostId,
       phase: this.phase,
       groundCards: playing ? this.game.getGroundSnapshot().map(toWire) : [],
       yourStack: playing && st ? [...st.stack] : [],
       yourScore: playing && st ? st.score : 0,
+      yourItem: playing && st ? st.item : null,
       scores: playing ? this.enrichScores(this.game.getScores()) : [],
       playerStacks: playing ? this.game.getAllStacks() : [],
     })
@@ -282,7 +383,9 @@ export class Room {
       this.game.addPlayer(s.id, s.homeIndex)
       // Start each player at their corner home (before first pose)
       const sp = getHomeSlot(s.homeIndex).spawn
-      s.pose = { x: sp.x, y: sp.y, z: sp.z, yaw: 0, seq: 0 }
+      // Bots have no gravity — use standing height, not fall-in spawn Y (2.2)
+      const y = s.isBot ? BOT_HOME_STAND_Y : sp.y
+      s.pose = { x: sp.x, y, z: sp.z, yaw: 0, seq: 0 }
       // lastPoseAt=0 → first client pose after start is not speed-clamped
       // (allows snap to correct home if client was still at default SW spawn)
       s.lastPoseAt = 0
@@ -299,16 +402,41 @@ export class Room {
     // Sync private empty stacks
     for (const s of this.seats.values()) {
       if (s.connected) {
-        this.sendTo(s.id, { type: 'private_state', stack: [], score: 0 })
+        this.sendTo(s.id, {
+          type: 'private_state',
+          stack: [],
+          score: 0,
+          item: null,
+        })
       }
     }
+    // After clients enter match: fill dummy backpack (broadcasts player_stack)
+    this.game.refillTrainingDummy()
     return { ok: true }
+  }
+
+  handleAttack(seatId: string, yaw: number): void {
+    if (this.phase !== 'playing') return
+    if (this.game.isStunned(seatId)) return
+    const poses = new Map<string, { x: number; y: number; z: number }>()
+    for (const s of this.seats.values()) {
+      if (!s.connected || !s.pose) continue
+      poses.set(s.id, { x: s.pose.x, y: s.pose.y, z: s.pose.z })
+    }
+    // Must include training dummy — it is not a seat
+    poses.set(TRAINING_DUMMY_ID, {
+      x: 0,
+      y: TRAINING_DUMMY_Y,
+      z: 0,
+    })
+    this.game.tryAttack(seatId, yaw, poses)
   }
 
   handlePose(seatId: string, msg: Extract<ClientMessage, { type: 'pose' }>): void {
     if (this.phase !== 'playing') return
     const seat = this.seats.get(seatId)
     if (!seat || !seat.connected) return
+    if (this.game.isStunned(seatId)) return
 
     if (
       !finiteNum(msg.x) ||
@@ -390,7 +518,12 @@ export class Room {
     return 0
   }
 
-  private addSeat(ws: WebSocket, name: string, asHost: boolean): Seat {
+  private addSeat(
+    ws: WebSocket | null,
+    name: string,
+    asHost: boolean,
+    isBot = false,
+  ): Seat {
     const id = newId()
     const sessionToken = newId() + newId()
     const homeIndex = this.allocHomeIndex()
@@ -401,16 +534,23 @@ export class Room {
       sessionToken,
       ws,
       connected: true,
-      ready: asHost, // host treated as ready
+      ready: asHost || isBot,
+      isBot,
       homeIndex,
       graceTimer: null,
       msgCount: 0,
       msgWindowStart: Date.now(),
-      pose: { x: sp.x, y: sp.y, z: sp.z, yaw: 0, seq: 0 },
+      pose: {
+        x: sp.x,
+        y: isBot ? BOT_HOME_STAND_Y : sp.y,
+        z: sp.z,
+        yaw: 0,
+        seq: 0,
+      },
       lastPoseAt: Date.now(),
     }
     this.seats.set(id, seat)
-    this.tokenIndex.set(sessionToken, id)
+    if (!isBot) this.tokenIndex.set(sessionToken, id)
     if (asHost) this.hostId = id
     return seat
   }
@@ -425,16 +565,34 @@ export class Room {
       this.game.removePlayer(seatId, drop)
     }
 
+    this.bots.delete(seatId)
     this.tokenIndex.delete(seat.sessionToken)
     this.seats.delete(seatId)
     this.broadcast({ type: 'player_left', playerId: seatId, reason })
 
-    // Host migration or dissolve
+    // Host migration: prefer humans
     if (seatId === this.hostId && this.seats.size > 0) {
-      const next = [...this.seats.values()].find((s) => s.connected) ?? [...this.seats.values()][0]
+      const next =
+        [...this.seats.values()].find((s) => s.connected && !s.isBot) ??
+        [...this.seats.values()].find((s) => s.connected) ??
+        [...this.seats.values()][0]
       if (next) {
         this.hostId = next.id
         next.ready = true
+      }
+    }
+
+    // No humans left → clear bots and dissolve
+    const humans = [...this.seats.values()].filter((s) => !s.isBot)
+    if (humans.length === 0 && this.seats.size > 0) {
+      for (const id of [...this.bots.keys()]) {
+        this.bots.delete(id)
+        const b = this.seats.get(id)
+        if (b && this.phase === 'playing') {
+          this.game.removePlayer(id, b.pose ? { x: b.pose.x, z: b.pose.z } : null)
+        }
+        this.seats.delete(id)
+        this.broadcast({ type: 'player_left', playerId: id, reason: 'kicked' })
       }
     }
 
@@ -459,16 +617,31 @@ export class Room {
     const dt = Math.min(0.25, (now - this.lastTickAt) / 1000)
     this.lastTickAt = now
 
+    // Snapshot poses first (bots update this map as they move / attack)
     const poses = new Map<string, { x: number; y: number; z: number }>()
     for (const s of this.seats.values()) {
       if (!s.connected || !s.pose) continue
       poses.set(s.id, { x: s.pose.x, y: s.pose.y, z: s.pose.z })
     }
+    // Training dummy fixed at arena center (hit target, not a seat)
+    poses.set(TRAINING_DUMMY_ID, {
+      x: 0,
+      y: TRAINING_DUMMY_Y,
+      z: 0,
+    })
+
+    // Bots move (+ optional stun swing), then sim uses final poses
+    for (const [id, bot] of this.bots) {
+      const seat = this.seats.get(id)
+      if (seat) bot.tick(dt, seat, this.game, poses)
+    }
+
     this.game.tick(dt, poses)
 
     const list: PlayerPose[] = []
     for (const s of this.seats.values()) {
       if (!s.connected || !s.pose) continue
+      // Humans + bots both broadcast for remotes
       list.push({
         id: s.id,
         x: s.pose.x,
@@ -477,6 +650,14 @@ export class Room {
         yaw: s.pose.yaw,
       })
     }
+    // Broadcast dummy so clients can sync stun / backpack if needed
+    list.push({
+      id: TRAINING_DUMMY_ID,
+      x: 0,
+      y: TRAINING_DUMMY_Y,
+      z: 0,
+      yaw: 0,
+    })
     if (list.length) {
       this.broadcast({ type: 'world_state', t: Date.now(), poses: list })
     }
@@ -497,7 +678,10 @@ export class Room {
   ): ScoreEntry[] {
     return scores.map((s) => ({
       ...s,
-      name: this.seats.get(s.id)?.name,
+      name:
+        s.id === TRAINING_DUMMY_ID
+          ? '木头人'
+          : this.seats.get(s.id)?.name,
     }))
   }
 

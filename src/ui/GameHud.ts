@@ -14,6 +14,7 @@ export class GameHud {
   private promptTimer: number | null = null
 
   private readonly scoresEl: HTMLDivElement
+  private readonly itemEl: HTMLDivElement
 
   constructor() {
     this.root = document.createElement('div')
@@ -21,7 +22,8 @@ export class GameHud {
 
     this.root.innerHTML = `
       <div class="hud-title"><strong>UNO Guys · 运牌回家</strong></div>
-      <div class="hud-help">点击画面锁定鼠标 · 镜头/WASD 移动 · 捡牌后走回<strong>左下角老家</strong>自动卸货 · 联机后牌以服务器为准</div>
+      <div class="hud-help">锁定鼠标 · WASD · 捡<strong>眩晕棒到手</strong>（不进背包）左键挥击 · 数字牌运回<strong>自家</strong></div>
+
       <div class="hud-lock" id="hud-lock">点击画面开始控制镜头</div>
       <div class="hud-home" id="hud-home">老家已送达：0 张</div>
       <div class="hud-scores" id="hud-scores" hidden></div>
@@ -36,8 +38,30 @@ export class GameHud {
     this.promptEl = this.root.querySelector('#hud-prompt')!
     this.homeEl = this.root.querySelector('#hud-home')!
     this.scoresEl = this.root.querySelector('#hud-scores')!
+    this.itemEl = document.createElement('div')
+    this.itemEl.className = 'hud-item'
+    this.itemEl.hidden = true
+    this.root.insertBefore(this.itemEl, this.stackEl)
     this.renderStack([])
     this.renderHome(0)
+    this.renderItem(null)
+  }
+
+  setHeldItem(item: { kind?: string; rank?: string; color?: string | null } | null): void {
+    this.renderItem(item)
+  }
+
+  private renderItem(item: { kind?: string; rank?: string; color?: string | null } | null): void {
+    if (!item) {
+      this.itemEl.hidden = true
+      this.itemEl.textContent = ''
+      return
+    }
+    this.itemEl.hidden = false
+    this.itemEl.textContent =
+      item.kind === 'stun_bat' || item.rank === 'stun'
+        ? '🔨 手持：狼牙棒（左键挥击）'
+        : '🎒 手持道具'
   }
 
   setScores(
@@ -94,6 +118,9 @@ export class GameHud {
           'ok',
         )
         break
+      case 'toast':
+        this.showPrompt(fb.text, fb.kind)
+        break
     }
   }
 
@@ -113,7 +140,7 @@ export class GameHud {
       const chip = document.createElement('span')
       chip.className = 'card-chip'
       chip.textContent = cardLabel(c)
-      chip.style.background = UNO_COLOR_CSS[c.color]
+      chip.style.background = c.color ? UNO_COLOR_CSS[c.color] : '#4c1d95'
       chip.style.color = c.color === 'yellow' ? '#111' : '#fff'
       this.chipsEl.appendChild(chip)
     }

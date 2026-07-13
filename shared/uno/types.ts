@@ -1,12 +1,17 @@
-/** Only four UNO colors; number cards only. */
+/** Four UNO colors; numbers use these. Function cards may omit color. */
 export type UnoColor = 'red' | 'yellow' | 'green' | 'blue'
 
-export type UnoRank = '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9'
+export type UnoRank = '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | 'stun'
+
+export type UnoKind = 'number' | 'stun_bat'
 
 export type UnoCardData = {
   id: string
-  color: UnoColor
+  /** Omitted / null for colorless function cards (e.g. stun). */
+  color?: UnoColor | null
   rank: UnoRank
+  /** Default number when omitted. */
+  kind?: UnoKind
 }
 
 export const UNO_COLOR_HEX: Record<UnoColor, number> = {
@@ -23,6 +28,10 @@ export const UNO_COLOR_CSS: Record<UnoColor, string> = {
   blue: '#457b9d',
 }
 
+/** Face / UI color for colorless function cards. */
+export const STUN_CARD_HEX = 0x4c1d95
+export const STUN_CARD_CSS = '#4c1d95'
+
 const COLOR_NAME: Record<UnoColor, string> = {
   red: '红',
   yellow: '黄',
@@ -30,10 +39,27 @@ const COLOR_NAME: Record<UnoColor, string> = {
   blue: '蓝',
 }
 
+export function isStunBat(card: UnoCardData): boolean {
+  return card.kind === 'stun_bat' || card.rank === 'stun'
+}
+
 export function rankLabel(rank: UnoRank): string {
+  if (rank === 'stun') return '晕'
   return rank
 }
 
 export function cardLabel(card: UnoCardData): string {
+  if (isStunBat(card)) return '狼牙棒'
+  if (!card.color) return rankLabel(card.rank)
   return `${COLOR_NAME[card.color]} ${card.rank}`
 }
+
+/** Attack item constants (server + client). */
+export const STUN_DURATION_MS = 1500
+/** On hit: drop exactly min(STUN_DROP_MAX, backpack length) cards from stack top. */
+export const STUN_DROP_MAX = 4
+/** Melee reach (world units). */
+export const ATTACK_RANGE = 1.6
+/** Half-angle of forward cone (degrees). */
+export const ATTACK_CONE_DEG = 55
+export const ATTACK_COOLDOWN_MS = 700

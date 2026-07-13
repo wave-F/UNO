@@ -1,6 +1,7 @@
 export class InputManager {
   private keys = new Set<string>()
   private jumpPressed = false
+  private attackPressed = false
   private mouseDx = 0
   private mouseDy = 0
   private pointerLocked = false
@@ -14,6 +15,7 @@ export class InputManager {
     document.addEventListener('mousemove', this.onMouseMove)
     document.addEventListener('pointerlockchange', this.onPointerLockChange)
     this.target.addEventListener('click', this.onClick)
+    this.target.addEventListener('mousedown', this.onMouseDown)
     this.target.addEventListener('contextmenu', this.onContextMenu)
   }
 
@@ -24,6 +26,7 @@ export class InputManager {
     document.removeEventListener('mousemove', this.onMouseMove)
     document.removeEventListener('pointerlockchange', this.onPointerLockChange)
     this.target.removeEventListener('click', this.onClick)
+    this.target.removeEventListener('mousedown', this.onMouseDown)
     this.target.removeEventListener('contextmenu', this.onContextMenu)
     if (document.pointerLockElement === this.target) {
       document.exitPointerLock()
@@ -68,10 +71,24 @@ export class InputManager {
     return true
   }
 
+  /** Left-click attack while pointer-locked (weapon item). */
+  consumeAttack(): boolean {
+    if (!this.attackPressed) return false
+    this.attackPressed = false
+    return true
+  }
+
   private onClick = (): void => {
     if (document.pointerLockElement !== this.target) {
       void this.target.requestPointerLock()
     }
+  }
+
+  private onMouseDown = (e: MouseEvent): void => {
+    if (e.button !== 0) return
+    if (document.pointerLockElement !== this.target) return
+    e.preventDefault()
+    this.attackPressed = true
   }
 
   private onContextMenu = (e: Event): void => {
@@ -111,6 +128,7 @@ export class InputManager {
   private onBlur = (): void => {
     this.keys.clear()
     this.jumpPressed = false
+    this.attackPressed = false
     this.mouseDx = 0
     this.mouseDy = 0
   }

@@ -27,6 +27,7 @@ export type PickupFeedback =
       cards: UnoCardData[]
       deliveredTotal: number
     }
+  | { type: 'toast'; text: string; kind: 'ok' | 'bad' }
 
 /**
  * Local authority (offline) or pure view driven by server (online).
@@ -100,16 +101,24 @@ export class CardPickupSystem {
   // ── Server → view ─────────────────────────────────────────
 
   applyGroundSnapshot(list: GroundCardWire[]): void {
-    if (this.mode !== 'online') return
+    // Always accept authoritative snapshot while in a room
+    this.mode = 'online'
     this.clearField()
     for (const g of list) this.addGround(g)
   }
 
-  applySpawned(list: GroundCardWire[]): void {
+  applySpawned(
+    list: GroundCardWire[],
+    burstFrom?: { x: number; y: number; z: number },
+  ): void {
     if (this.mode !== 'online') return
     for (const g of list) {
       if (this.cards.has(g.card.id)) continue
-      this.addGround(g)
+      this.addPickup(
+        g.card,
+        new THREE.Vector3(g.x, g.y, g.z),
+        burstFrom ?? null,
+      )
     }
   }
 
@@ -117,9 +126,24 @@ export class CardPickupSystem {
     this.removeGround(cardId)
   }
 
-  applyPrivateStack(stack: UnoCardData[], score: number): void {
+  private item: UnoCardData | null = null
+
+  applyPrivateStack(
+    stack: UnoCardData[],
+    score: number,
+    item: UnoCardData | null = null,
+  ): void {
     this.stack = [...stack]
     this.deliveredTotal = score
+    this.item = item
+  }
+
+  getItem(): UnoCardData | null {
+    return this.item
+  }
+
+  setItem(item: UnoCardData | null): void {
+    this.item = item
   }
 
   notifyPickedLocal(card: UnoCardData, stack: UnoCardData[]): void {
@@ -242,12 +266,16 @@ export class CardPickupSystem {
   }
 
   private addGround(g: GroundCardWire): void {
-    this.addPickup(g.card, new THREE.Vector3(g.x, g.y, g.z))
+    this.addPickup(g.card, new THREE.Vector3(g.x, g.y, g.z), null)
   }
 
-  private addPickup(card: UnoCardData, pos: THREE.Vector3): void {
+  private addPickup(
+    card: UnoCardData,
+    pos: THREE.Vector3,
+    burstFrom: { x: number; y: number; z: number } | null = null,
+  ): void {
     if (this.cards.has(card.id)) return
-    const pickup = new CardPickup(card, pos)
+    const pickup = new CardPickup(card, pos, burstFrom)
     this.cards.set(card.id, pickup)
     this.group.add(pickup.mesh)
   }

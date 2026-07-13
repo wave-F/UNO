@@ -31,6 +31,7 @@ game
   .then(() => {
     game.attachNet(net)
     game.setScoresListener((scores) => hud.setScores(scores, net.playerId))
+    game.setItemListener((item) => hud.setHeldItem(item))
     game.setPointerLockListener((locked) => hud.setPointerLocked(locked))
     game.start()
   })

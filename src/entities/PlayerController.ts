@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import type RAPIER from '@dimforge/rapier3d-compat'
+import { maxSpeedForCarry } from '../../shared/config/movement'
 import { movementConfig as cfg } from '../config/movement'
 import type { PhysicsWorld } from '../core/Physics'
 import type { InputManager } from '../managers/InputManager'
@@ -21,6 +22,8 @@ export class PlayerController {
   /** Applied at start of update so KCC cannot overwrite the same frame. */
   private pendingTeleport: { x: number; y: number; z: number; yaw: number } | null =
     null
+  /** Client-local stun end time (performance.now or Date). */
+  private stunUntilMs = 0
 
   constructor(
     physics: PhysicsWorld,
@@ -53,6 +56,15 @@ export class PlayerController {
     this.syncMesh()
   }
 
+  /** Stun until epoch ms (Date.now). */
+  setStunUntil(untilMs: number): void {
+    this.stunUntilMs = Math.max(this.stunUntilMs, untilMs)
+  }
+
+  isStunned(now = Date.now()): boolean {
+    return now < this.stunUntilMs
+  }
+
   update(dt: number): void {
     if (this.pendingTeleport) {
       const p = this.pendingTeleport
@@ -68,6 +80,28 @@ export class PlayerController {
       return
     }
 
+    if (this.isStunned()) {
+      this.horizVel.set(0, 0, 0)
+      this.verticalVel -= cfg.gravity * dt
+      if (this.verticalVel < -cfg.maxFallSpeed) this.verticalVel = -cfg.maxFallSpeed
+      this.tmpDesired.x = 0
+      this.tmpDesired.y = this.verticalVel * dt
+      this.tmpDesired.z = 0
+      this.controller.computeColliderMovement(this.collider, this.tmpDesired)
+      const movement = this.controller.computedMovement()
+      const t = this.body.translation()
+      this.body.setNextKinematicTranslation({
+        x: t.x + movement.x,
+        y: t.y + movement.y,
+        z: t.z + movement.z,
+      })
+      this.grounded = this.controller.computedGrounded()
+      if (this.grounded && this.verticalVel < 0) this.verticalVel = 0
+      this.syncMesh()
+      this.player.updateVisuals(dt)
+      return
+    }
+
     const move = this.input.getMoveVector()
     // Camera-relative: W 沿镜头水平朝向，A/D 沿水平右方向
     this.cameraFollow.getFlatForward(this.flatForward)
@@ -78,13 +112,16 @@ export class PlayerController {
     this.wishDir.addScaledVector(this.flatRight, move.x)
     if (this.wishDir.lengthSq() > 1e-6) this.wishDir.normalize()
 
-    const target = this.wishDir.clone().multiplyScalar(cfg.maxSpeed)
+    // −5% max speed per card on backpack (shared rule with bots)
+    const maxSpeed = maxSpeedForCarry(this.player.getHeldCount(), cfg.maxSpeed)
+
+    const target = this.wishDir.clone().multiplyScalar(maxSpeed)
 
     const accel = this.grounded ? cfg.accel : cfg.accel * cfg.airControl
     const decel = this.grounded ? cfg.decel : cfg.decel * cfg.airControl
 
     if (target.lengthSq() > 0) {
-      const t = Math.min(1, (accel * dt) / cfg.maxSpeed)
+      const t = Math.min(1, (accel * dt) / Math.max(maxSpeed, 0.01))
       this.horizVel.x += (target.x - this.horizVel.x) * t
       this.horizVel.z += (target.z - this.horizVel.z) * t
     } else {
@@ -97,8 +134,8 @@ export class PlayerController {
 
     // Clamp horizontal speed
     const hSpeed = Math.hypot(this.horizVel.x, this.horizVel.z)
-    if (hSpeed > cfg.maxSpeed) {
-      const s = cfg.maxSpeed / hSpeed
+    if (hSpeed > maxSpeed) {
+      const s = maxSpeed / hSpeed
       this.horizVel.x *= s
       this.horizVel.z *= s
     }

@@ -43,7 +43,8 @@ export class RemotePlayer {
     while (this.snaps.length > 12) this.snaps.shift()
   }
 
-  update(_dt: number): void {
+  update(dt: number): void {
+    this.player.updateVisuals(dt)
     if (this.snaps.length === 0) return
 
     const renderAt = performance.now() - this.interpDelayMs
@@ -97,6 +98,7 @@ export class RemotePlayer {
 
   dispose(): void {
     this.player.setHeldStack([])
+    this.player.setHeldItem(null)
     this.player.headCard.dispose()
     const tex = this.nameSprite.material.map
     this.nameSprite.material.dispose()

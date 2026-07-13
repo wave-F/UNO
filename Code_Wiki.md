@@ -7,18 +7,22 @@
 当前能力：
 
 - 渲染糖果色软垫风格场景
-- 玩家键盘 **移动 / 跳跃**（相对镜头）；点击锁定鼠标转镜头
+- 玩家键盘 **移动 / 跳跃**（相对镜头）；点击锁定鼠标转镜头；**左键挥狼牙棒**
 - Rapier 物理 + Kinematic Character Controller
-- 场景 **UNO 数字牌**拾取堆叠（`canStackOn`）；运回 **左下角老家**计分
-- **局域网联机（已落地）**：多房间 RoomManager、大厅准备、房主开始、位姿+权威卡牌；可单机
+- 场景 **UNO 数字牌**拾取堆叠（`canStackOn`）；运回 **本家角**计分
+- **背牌减速**：每张背包牌 **−5%** 移速，最低 **50%**（`shared/config/movement.ts`）
+- **局域网联机**：多房间、大厅、房主开始、位姿+权威卡牌；可单机
+- **服务器机器人**（测试）：捡牌/卸货/偶发偷家；持棒攻击有 **0.5–1.5s 随机前摇**
+- **眩晕道具**：无色功能牌 → 场上/手持为 **狼牙棒**网格；击中眩晕 1.5s、掉背包顶至多 4 张；**不掉对方手持道具**
+- **木头人**（场地中央）：可打测试靶，背后叠测试牌，眩晕后自动补牌
 
 **路线图：**
 
 | 阶段 | 内容 | 状态 |
 |------|------|------|
 | 单机玩法 | 移动、捡牌、卸货 | ✅ |
-| 联机 Phase 1–3 | 房间/移动/权威卡牌 | ✅ |
-| 联机 Phase 4 | **多房间 + 大厅 + 房主开始** | ✅ |
+| 联机 Phase 1–4 | 房间/移动/权威卡牌/多房间 | ✅ |
+| 联机 Phase 5 | 机器人 + 眩晕战斗 + 木头人 | ✅ |
 | 后续 | 静态托管、胜负 UI 等 | ⏳ |
 
 工作区：`/Users/fengbotao/游戏设计/Uno`  
@@ -32,13 +36,13 @@
 
 ```text
 浏览器 (Vite + TS)
-  ├── three / Rapier / Game 循环（单机权威）
+  ├── three / Rapier / Game 循环
   ├── NetClient + LobbyPanel  ──WebSocket──►  主机 Node server
   └── shared/protocol.ts（前后端共用消息）
 
 主机 Node (tsx)
   ├── HTTP :8787 /health
-  └── WebSocket Room（join / room_state / reconnect / rate limit）
+  └── WebSocket RoomManager → Room → GameSim + Bot
 ```
 
 **联机选型（锁定）：**
@@ -48,13 +52,15 @@
 | 拓扑 | 主机权威 Listen Server |
 | 传输 | WebSocket（JSON） |
 | 发现 | 主机 IP + 端口 8787 |
-| 协议版本 | `PROTOCOL_VERSION = 4`（多房间大厅） |
-| 房间 | `RoomManager`：创建/房间码加入；每房一房主；对局中不可加入 |
+| 协议版本 | `PROTOCOL_VERSION = 5` |
+| 房间 | `RoomManager`：创建/房间码加入；测试房 `0000` 可一点即玩 |
 | 位姿 | 客户端 20Hz 上报；服务器 10Hz 广播；远端插值 ~100ms |
-| 卡牌 | `server/GameSim` 刷牌/拾取/卸货；客户端仅表现 |
-| 背上牌 | 本地 `private_state`；全员 `player_stack` 驱动远端 `HeadCardDisplay` |
-| 老家 | 四角各一座（`homeSlots` 0–3）；座位 `homeIndex`；仅本家卸货 |
-| 人数 | 最多 4 |
+| 卡牌 | `server/GameSim` 刷牌/拾取/卸货/攻击；客户端仅表现 |
+| 道具 | 手持 `item`（狼牙棒）≠ 背包 `stack`；`player_item` 公开同步 |
+| 攻击 | 身前锥形 `ATTACK_RANGE`/`ATTACK_CONE_DEG`；命中消耗自己的棒 |
+| 背上牌 | `private_state` + 全员 `player_stack` |
+| 老家 | 四角 0–3；仅本家卸货 |
+| 人数 | 最多 4（+ 非座位木头人 `training_dummy`） |
 | 断线 | 座位保留 15s，`sessionToken` 可重连 |
 
 ---
@@ -63,76 +69,75 @@
 
 ```text
 Uno/
-├── package.json
 ├── shared/
 │   ├── protocol.ts
-│   ├── config/{cards,home}.ts
+│   ├── config/{cards,home,movement,dummy}.ts
 │   └── uno/{types,rules,deck}.ts
 ├── server/
-│   ├── index.ts
-│   ├── Room.ts
-│   ├── GameSim.ts           # 权威卡牌世界
-│   └── tsconfig.json
+│   ├── index.ts / RoomManager.ts / Room.ts
+│   ├── GameSim.ts           # 权威卡牌+攻击+木头人
+│   └── Bot.ts               # 服务端 AI
 ├── src/
-│   ├── main.ts              # Game + LobbyPanel + NetClient
-│   ├── net/NetClient.ts     # WS + pose 上报
-│   ├── entities/RemotePlayer.ts
-│   ├── systems/RemotePlayerSystem.ts
-│   ├── ui/LobbyPanel.ts
-│   ├── ui/GameHud.ts
-│   ├── core/Game.ts         # attachNet + remotes
-│   └── game/uno/ …          # 规则仍仅客户端（Phase 3 上移 shared）
+│   ├── main.ts / core/Game.ts
+│   ├── net/NetClient.ts
+│   ├── entities/{Player,TrainingDummy,AttackRangeVisual,StunFx,...}
+│   ├── game/uno/{cardVisual,maceVisual}.ts
+│   └── ui/{LobbyPanel,GameHud}.ts
 └── Code_Wiki.md
 ```
 
 | 文件 | 作用 |
 |------|------|
-| `shared/protocol.ts` | 消息类型、pose/world_state、频率常量 |
-| `server/index.ts` | 绑定 `0.0.0.0:8787` |
-| `server/Room.ts` | 房间、限流、位姿校验、10Hz world_state |
-| `src/net/NetClient.ts` | join、tickPose、worldState 事件 |
-| `src/entities/RemotePlayer.ts` | 远端胶囊 + 名牌 + 插值 |
-| `src/systems/RemotePlayerSystem.ts` | roster 与 world_state 应用 |
-| `src/ui/LobbyPanel.ts` | 联机 UI |
+| `shared/protocol.ts` | 消息类型；`attack` / `player_stunned` / `ground_snapshot` 等 |
+| `shared/config/movement.ts` | 背牌减速、基础移速（前后端共用） |
+| `shared/config/dummy.ts` | 木头人 id / 高度 / 补牌张数 |
+| `shared/uno/types.ts` | 牌型、眩晕常量、`isStunBat` |
+| `shared/uno/deck.ts` | 刷牌；`stunFraction:0` 时不生成眩晕 |
+| `server/GameSim.ts` | 场上牌、背包、道具、攻击、爆牌、木头人 |
+| `server/Bot.ts` | 机器人寻路与延迟攻击 |
+| `server/Room.ts` | 房间 tick、位姿、攻击 pose 含木头人 |
+| `src/game/uno/maceVisual.ts` | 程序化狼牙棒网格 |
+| `src/entities/TrainingDummy.ts` | 中央木头人 + 受击/眩晕表现 |
+| `src/entities/AttackRangeVisual.ts` | 身前攻击扇形 |
+| `src/entities/StunFx.ts` | 头顶眩晕星星 |
+| `src/entities/Player.ts` | 本地/远端豆人 + 手持棒 + 背牌 |
 
 ### npm scripts
 
 ```bash
-npm run dev       # 前端 Vite（--host，可被局域网打开页面）
+npm run dev       # 前端 Vite（--host）
 npm run server    # 联机房间服 :8787
 npm run build     # tsc + vite build
 ```
 
-### 局域网怎么玩（Phase 1）
+### 局域网怎么玩
 
-1. **主机**终端：`npm run server`（看日志里的 `ws://192.168.x.x:8787`）  
-2. **主机**另开：`npm run dev`  
-3. 浏览器打开 Vite 地址；右上角填昵称，WS 默认 `ws://本机hostname:8787`  
-4. **其他设备**：打开 `http://主机局域网IP:5173`，WS 填 `ws://主机局域网IP:8787`，点「加入房间」  
-5. 进房后：对方移动 + **同一套场上牌**；一人捡走全员消失；得分在 HUD「联机得分」  
+1. 主机：`npm run server` + `npm run dev`  
+2. 页面进房（或「本地双开测试」房间 `0000`）→ 房主开始  
+3. 改 `server/` 或 `shared/` 后需 **重启 `npm run server`**；纯客户端可只刷新  
 
-防火墙放行 **5173** / **8787**。协议 v3 需重启 `npm run server`。
+防火墙放行 **5173** / **8787**。
 
 ---
 
-## 单机玩法摘要
+## 战斗与道具摘要
 
-- 仅数字牌四色 0–9；同色或同点可叠  
-- 老家卸货累计张数（单机默认西南角；联机四人四角）  
-- 调参：`src/config/movement.ts`、`cards.ts`、`shared/config/home.ts`
+- 眩晕为**无色功能牌**，不按 UNO 顺序；有空手持槽即可捡  
+- 场上/手持显示为狼牙棒，不进背包  
+- 左键：身前扇形内最近目标；命中 → 眩晕 1.5s、从背包**顶**掉 `min(4, 张数)` 数字牌、消耗自己的棒  
+- **不掉对方手持道具**  
+- 爆落牌 `source: stun_drop`；木头人补牌 / 重连 welcome 会清理残留爆落  
+- 机器人攻击：范围内随机前摇 0.5–1.5s 再挥，冷却 0.9–1.7s  
 
 ---
 
 ## 对上手开发者
 
 1. 未 join：本地 `CardPickupSystem` 权威；join 后 `enterOnlineMode`。  
-2. 断线：15s 后座位移除，背包牌掉回场上。  
-3. 本地忽略自己的 world_state 位姿。  
-4. 物理与图形分离：位移 KCC，Mesh 跟 translation。  
-5. `localStorage`：session / name / ws-url。  
-6. `HomeYard` 渲染四角；`PublicPlayer.homeIndex` 绑定座位；`match_start.homes` 权威下发；开局传送本家。  
-7. 场上刷牌避开四角 `cardSpawnClearRadius`；别人家里不能捡牌也不能卸货。  
-8. 本地 `PlayerController.teleport` 排队避开 KCC 覆盖；服务器对「落在本家出生点」的位姿不做限速钳制。
+2. 攻击判定只在服务器；`handleAttack` 的 pose **必须包含** `TRAINING_DUMMY_ID`。  
+3. 客户端眩晕特效用本地 `durationMs`，避免与服务器时钟偏差。  
+4. `localStorage`：session / name / ws-url。  
+5. 背牌移速：`maxSpeedForCarry(stack.length)`。  
 
 ---
 
@@ -140,4 +145,6 @@ npm run build     # tsc + vite build
 
 | 阶段 | 内容 |
 |------|------|
-| 4 | 一键 host 静态托管、胜负 UI、表现打磨 |
+| 打磨 | 胜负 UI、更多功能牌、平衡调参 |
+| 发布 | 一键 host 静态托管 |
+|

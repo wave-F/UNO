@@ -13,8 +13,10 @@ import {
   type PickupFeedback,
 } from '../systems/CardPickupSystem'
 import { RemotePlayerSystem } from '../systems/RemotePlayerSystem'
+import { TRAINING_DUMMY_ID } from '../../shared/config/dummy'
 import type { PublicPlayer } from '../../shared/protocol'
 import type { UnoCardData } from '../game/uno/types'
+import { TrainingDummy } from '../entities/TrainingDummy'
 
 export class Game {
   private renderer!: WebGPURenderer
@@ -27,6 +29,8 @@ export class Game {
   private cardSystem!: CardPickupSystem
   private homeYard!: HomeYard
   private remotes = new RemotePlayerSystem()
+  private trainingDummy: TrainingDummy | null = null
+  private pendingDummyStack: UnoCardData[] | null = null
   private net: NetClient | null = null
   private unsubs: Array<() => void> = []
   private clock = new THREE.Clock()
@@ -60,6 +64,12 @@ export class Game {
     this.onScores = cb
   }
 
+  private onItem: ((item: UnoCardData | null) => void) | null = null
+
+  setItemListener(cb: (item: UnoCardData | null) => void): void {
+    this.onItem = cb
+  }
+
   private matchLive = false
 
   /** Wire LAN client (optional). Offline still works without this. */
@@ -85,6 +95,7 @@ export class Game {
             info.yourScore,
             info.scores,
             /*teleportHome*/ true,
+            info.yourItem ?? null,
           )
           this.remotes.applyPlayerStacks(info.playerStacks ?? [])
         } else {
@@ -107,15 +118,19 @@ export class Game {
         } else if (net.players.length) {
           this.applyRosterHomes(net.players, net.playerId)
         }
-        this.beginMatch(ground, [], 0, scores, true)
+        this.beginMatch(ground, [], 0, scores, true, null)
       }),
       net.on('worldState', (_t, poses) => {
         if (!this.matchLive) return
         this.remotes.applyWorldState(poses)
       }),
-      net.on('cardsSpawned', (cards) => {
+      net.on('cardsSpawned', (cards, burstFrom) => {
         if (!this.matchLive) return
-        this.cardSystem.applySpawned(cards)
+        this.cardSystem.applySpawned(cards, burstFrom)
+      }),
+      net.on('groundSnapshot', (cards) => {
+        if (!this.matchLive) return
+        this.cardSystem.applyGroundSnapshot(cards)
       }),
       net.on('cardPicked', (info) => {
         if (!this.matchLive) return
@@ -127,23 +142,17 @@ export class Game {
       net.on('clearIllegal', () => {
         this.cardSystem.notifyClearIllegal()
       }),
-      net.on('privateState', (stack, score) => {
+      net.on('privateState', (stack, score, item) => {
         if (!this.matchLive) return
-        this.cardSystem.applyPrivateStack(stack, score)
-        this.playerCtrl.player.setHeldStack(stack)
-        if (stack.length === 0) {
-          this.onPickupFeedback({
-            type: 'deposited',
-            cards: [],
-            deliveredTotal: score,
-          })
-        } else {
-          const top = stack[stack.length - 1]!
-          this.onPickupFeedback({ type: 'picked', card: top, stack })
-        }
+        this.applyLocalInventory(stack, score, item)
       }),
       net.on('playerStack', (playerId, stack) => {
         if (!this.matchLive) return
+        if (playerId === TRAINING_DUMMY_ID) {
+          if (this.trainingDummy) this.trainingDummy.setStack(stack)
+          else this.pendingDummyStack = [...stack]
+          return
+        }
         this.remotes.setPlayerStack(playerId, stack)
       }),
       net.on('homeStolen', (info) => {
@@ -166,10 +175,63 @@ export class Game {
       net.on('scores', (scores) => {
         this.onScores?.(scores)
       }),
+      net.on('playerStunned', (playerId, until, durationMs) => {
+        if (playerId === TRAINING_DUMMY_ID) {
+          const pos = this.playerCtrl.getPosition()
+          this.trainingDummy?.playHit(durationMs, pos.x, pos.z)
+          this.onPickupFeedback({
+            type: 'toast',
+            text: `木头人眩晕 ${(durationMs / 1000).toFixed(1)}s`,
+            kind: 'ok',
+          })
+          return
+        }
+        if (playerId === net.playerId) {
+          this.playerCtrl.setStunUntil(until)
+          this.playerCtrl.player.setStunnedUntil(until, durationMs)
+          this.onPickupFeedback({
+            type: 'toast',
+            text: `被眩晕！${(durationMs / 1000).toFixed(1)} 秒`,
+            kind: 'bad',
+          })
+        } else {
+          this.remotes.setStunned(playerId, until, durationMs)
+        }
+      }),
+      net.on('attackHit', (attackerId, victimId, dropped) => {
+        // Redundant hit FX if stun packet arrives late/out of order
+        if (victimId === TRAINING_DUMMY_ID) {
+          const pos = this.playerCtrl.getPosition()
+          this.trainingDummy?.playHit(1500, pos.x, pos.z)
+        }
+        if (attackerId === net.playerId) {
+          const who =
+            victimId === TRAINING_DUMMY_ID ? '木头人' : '对方'
+          this.onPickupFeedback({
+            type: 'toast',
+            text: `击中${who}！掉落 ${dropped} 张 · 狼牙棒已消耗`,
+            kind: 'ok',
+          })
+        } else {
+          this.remotes.playSwing(attackerId)
+        }
+      }),
+      net.on('attackMiss', () => {
+        this.onPickupFeedback({
+          type: 'toast',
+          text: '未命中（道具保留）',
+          kind: 'bad',
+        })
+      }),
+      net.on('playerItem', (playerId, item) => {
+        if (playerId === net.playerId) return
+        this.remotes.setPlayerItem(playerId, item)
+      }),
       net.on('status', (status) => {
         if (status === 'disconnected' || status === 'error') {
           this.matchLive = false
           this.remotes.clear()
+          this.removeTrainingDummy()
           this.homeByPlayer.clear()
           if (this.cardSystem.isOnline()) {
             this.cardSystem.enterOfflineMode()
@@ -191,20 +253,60 @@ export class Game {
     score: number,
     scores: { id: string; name?: string; score: number; stackCount: number }[],
     teleportHome: boolean,
+    item: UnoCardData | null = null,
   ): void {
     this.matchLive = true
     if (!this.cardSystem.isOnline()) this.cardSystem.enterOnlineMode()
     if (teleportHome) this.teleportLocalToHome()
     this.cardSystem.applyGroundSnapshot(ground)
-    this.cardSystem.applyPrivateStack(stack, score)
+    this.applyLocalInventory(stack, score, item)
+    this.onScores?.(scores)
+    this.spawnTrainingDummy()
+  }
+
+  private spawnTrainingDummy(): void {
+    this.removeTrainingDummy()
+    this.trainingDummy = new TrainingDummy()
+    this.scene.add(this.trainingDummy.root)
+    if (this.pendingDummyStack) {
+      this.trainingDummy.setStack(this.pendingDummyStack)
+      this.pendingDummyStack = null
+    }
+  }
+
+  private removeTrainingDummy(): void {
+    if (!this.trainingDummy) return
+    this.scene.remove(this.trainingDummy.root)
+    this.trainingDummy.dispose()
+    this.trainingDummy = null
+  }
+
+  private applyLocalInventory(
+    stack: UnoCardData[],
+    score: number,
+    item: UnoCardData | null,
+  ): void {
+    this.cardSystem.applyPrivateStack(stack, score, item)
     this.playerCtrl.player.setHeldStack(stack)
+    this.playerCtrl.player.setHeldItem(item)
+    this.onItem?.(item)
     if (stack.length) {
       const top = stack[stack.length - 1]!
       this.onPickupFeedback({ type: 'picked', card: top, stack })
     } else {
-      this.onPickupFeedback({ type: 'deposited', cards: [], deliveredTotal: score })
+      this.onPickupFeedback({
+        type: 'deposited',
+        cards: [],
+        deliveredTotal: score,
+      })
     }
-    this.onScores?.(scores)
+    if (item) {
+      this.onPickupFeedback({
+        type: 'toast',
+        text: '手持眩晕棒 · 左键挥击（不进背包）',
+        kind: 'ok',
+      })
+    }
   }
 
   private applyRosterHomes(
@@ -284,6 +386,7 @@ export class Game {
     this.net = null
     this.matchLive = false
     this.remotes.clear()
+    this.removeTrainingDummy()
     this.homeByPlayer.clear()
   }
 
@@ -392,6 +495,7 @@ export class Game {
     this.cameraFollow.updatePosition(pos, dt)
     this.cardSystem.update(pos, dt)
     this.remotes.update(dt)
+    this.trainingDummy?.update(dt)
 
     if (this.net?.isPlaying) {
       this.net.tickPose(dt, {
@@ -400,6 +504,20 @@ export class Game {
         z: pos.z,
         yaw: this.playerCtrl.getYaw(),
       })
+      if (this.input.consumeAttack() && !this.playerCtrl.isStunned()) {
+        const held = this.playerCtrl.player.getHeldItem()
+        if (!held) {
+          this.onPickupFeedback({
+            type: 'toast',
+            text: '没有狼牙棒，先去场上捡',
+            kind: 'bad',
+          })
+        } else {
+          // Local swing FX immediately; server resolves hit
+          this.playerCtrl.player.playSwing()
+          this.net.attack(this.playerCtrl.getYaw())
+        }
+      }
     }
 
     void this.renderer.render(this.scene, this.camera)

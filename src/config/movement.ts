@@ -1,7 +1,9 @@
+import { BASE_MAX_SPEED } from '../../shared/config/movement'
+
 /** Tunable Fall-Guys-ish movement parameters (Phase 1). */
 export const movementConfig = {
-  /** Max horizontal speed (m/s). */
-  maxSpeed: 7.5,
+  /** Max horizontal speed (m/s). Reduced 5% per carried card (see shared/config/movement). */
+  maxSpeed: BASE_MAX_SPEED,
   /** Ground acceleration toward target velocity. */
   accel: 28,
   /** Ground deceleration when no input. */

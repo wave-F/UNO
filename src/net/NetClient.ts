@@ -32,6 +32,7 @@ export type NetClientEvents = {
     groundCards: GroundCardWire[]
     yourStack: UnoCardData[]
     yourScore: number
+    yourItem: UnoCardData | null
     scores: ScoreEntry[]
     playerStacks: { playerId: string; stack: UnoCardData[] }[]
   }) => void
@@ -50,7 +51,11 @@ export type NetClientEvents = {
   playerLeft: (playerId: string, reason: string) => void
   playerReconnected: (playerId: string) => void
   worldState: (t: number, poses: PlayerPose[]) => void
-  cardsSpawned: (cards: GroundCardWire[]) => void
+  cardsSpawned: (
+    cards: GroundCardWire[],
+    burstFrom?: { x: number; y: number; z: number },
+  ) => void
+  groundSnapshot: (cards: GroundCardWire[]) => void
   cardPicked: (info: {
     playerId: string
     cardId: string
@@ -77,10 +82,18 @@ export type NetClientEvents = {
     thiefStackCount: number
     victimScore: number
   }) => void
-  privateState: (stack: UnoCardData[], score: number) => void
+  privateState: (
+    stack: UnoCardData[],
+    score: number,
+    item: UnoCardData | null,
+  ) => void
   /** Public backpack update for remote avatar HeadCardDisplay. */
   playerStack: (playerId: string, stack: UnoCardData[]) => void
+  playerItem: (playerId: string, item: UnoCardData | null) => void
   scores: (scores: ScoreEntry[]) => void
+  playerStunned: (playerId: string, until: number, durationMs: number) => void
+  attackHit: (attackerId: string, victimId: string, dropped: number) => void
+  attackMiss: () => void
   error: (code: string, message: string) => void
   pong: (rttMs: number) => void
 }
@@ -189,6 +202,20 @@ export class NetClient {
 
   startGame(): void {
     this.send({ type: 'start_game' })
+  }
+
+  addBot(): void {
+    this.send({ type: 'add_bot' })
+  }
+
+  removeBot(): void {
+    this.send({ type: 'remove_bot' })
+  }
+
+  /** Melee attack (stun bat). yaw = facing. */
+  attack(yaw: number): void {
+    if (!this.isPlaying) return
+    this.send({ type: 'attack', yaw })
   }
 
   leaveRoom(): void {
@@ -342,6 +369,7 @@ export class NetClient {
           groundCards: msg.groundCards,
           yourStack: msg.yourStack,
           yourScore: msg.yourScore,
+          yourItem: msg.yourItem ?? null,
           scores: msg.scores,
           playerStacks: msg.playerStacks ?? [],
         })
@@ -390,7 +418,10 @@ export class NetClient {
         this.emit('worldState', msg.t, msg.poses)
         break
       case 'cards_spawned':
-        this.emit('cardsSpawned', msg.cards)
+        this.emit('cardsSpawned', msg.cards, msg.burstFrom)
+        break
+      case 'ground_snapshot':
+        this.emit('groundSnapshot', msg.cards)
         break
       case 'card_picked':
         this.emit('cardPicked', {
@@ -425,13 +456,25 @@ export class NetClient {
         })
         break
       case 'private_state':
-        this.emit('privateState', msg.stack, msg.score)
+        this.emit('privateState', msg.stack, msg.score, msg.item ?? null)
         break
       case 'player_stack':
         this.emit('playerStack', msg.playerId, msg.stack)
         break
+      case 'player_item':
+        this.emit('playerItem', msg.playerId, msg.item)
+        break
       case 'scores':
         this.emit('scores', msg.scores)
+        break
+      case 'player_stunned':
+        this.emit('playerStunned', msg.playerId, msg.until, msg.durationMs)
+        break
+      case 'attack_hit':
+        this.emit('attackHit', msg.attackerId, msg.victimId, msg.dropped)
+        break
+      case 'attack_miss':
+        this.emit('attackMiss')
         break
       case 'pong': {
         const rtt =

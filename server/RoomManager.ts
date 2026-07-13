@@ -82,6 +82,12 @@ export class RoomManager {
       case 'leave_room':
         this.leaveRoom(ws)
         break
+      case 'add_bot':
+        this.addBot(ws)
+        break
+      case 'remove_bot':
+        this.removeBot(ws)
+        break
       case 'ping': {
         if (!ctx.seatId) {
           send(ws, { type: 'error', code: 'not_joined', message: '请先加入房间' })
@@ -93,6 +99,12 @@ export class RoomManager {
       case 'pose': {
         if (!ctx.room || !ctx.seatId) return
         ctx.room.handlePose(ctx.seatId, msg)
+        break
+      }
+      case 'attack': {
+        if (!ctx.room || !ctx.seatId) return
+        const yaw = typeof msg.yaw === 'number' && Number.isFinite(msg.yaw) ? msg.yaw : 0
+        ctx.room.handleAttack(ctx.seatId, yaw)
         break
       }
       default:
@@ -205,6 +217,8 @@ export class RoomManager {
           connected: true,
           ready: seat.ready,
           isHost: seat.id === room.hostId,
+          homeIndex: seat.homeIndex,
+          isBot: seat.isBot,
         },
       },
       seat.id,
@@ -334,8 +348,9 @@ export class RoomManager {
     this.bind(ws, room, seat)
     room.sendWelcome(ws, seat)
     room.broadcastRoomState()
-    // Dev quick room: first client auto-starts (no 「开始游戏」)
+    // Dev quick room: auto bot + auto start
     if (isDevQuick) {
+      room.addBot(seat.id)
       room.forceStartMatch()
     }
   }
@@ -361,6 +376,26 @@ export class RoomManager {
 
   private leaveRoom(ws: WebSocket): void {
     this.detachFromRoom(ws)
+  }
+
+  private addBot(ws: WebSocket): void {
+    const ctx = this.byWs.get(ws)
+    if (!ctx?.room || !ctx.seatId) {
+      send(ws, { type: 'error', code: 'not_joined', message: '请先加入房间' })
+      return
+    }
+    const result = ctx.room.addBot(ctx.seatId)
+    if ('error' in result) send(ws, result.error)
+  }
+
+  private removeBot(ws: WebSocket): void {
+    const ctx = this.byWs.get(ws)
+    if (!ctx?.room || !ctx.seatId) {
+      send(ws, { type: 'error', code: 'not_joined', message: '请先加入房间' })
+      return
+    }
+    const result = ctx.room.removeBot(ctx.seatId)
+    if ('error' in result) send(ws, result.error)
   }
 
   private detachFromRoom(ws: WebSocket): void {

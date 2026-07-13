@@ -52,6 +52,8 @@ export class HomeBase {
   private isMine = false
   /** Someone is assigned to this corner (online). */
   private hasOwner = false
+  /** Display name for other players' homes. */
+  private ownerName = ''
 
   constructor(opts: HomeBaseOptions = {}) {
     this.slotIndex = opts.slotIndex ?? homeConfig.defaultSlot
@@ -168,6 +170,11 @@ export class HomeBase {
     this.refreshBubble()
   }
 
+  setOwnerName(name: string): void {
+    this.ownerName = name.trim()
+    this.refreshBubble()
+  }
+
   getTopCard(): UnoCardData | null {
     if (!this.deposited.length) return null
     return this.deposited[this.deposited.length - 1]!
@@ -204,7 +211,8 @@ export class HomeBase {
   /**
    * Bubble above home:
    * - yours: 「你的老家」
-   * - others: top card only e.g. 「红4」（空则隐藏）
+   * - others with pile: 「张三 红3」
+   * - others empty: 「张三」
    * - empty slot: hidden
    */
   refreshBubble(): void {
@@ -217,14 +225,17 @@ export class HomeBase {
       this.labelSprite.visible = false
       return
     }
+    const name = this.ownerName || '玩家'
     const top = this.getTopCard()
     if (!top) {
-      this.labelSprite.visible = false
+      this.paintBubble(name, '#e2e8f0')
+      this.labelSprite.visible = true
       return
     }
-    // 「红 4」→「红4」
-    const text = cardLabel(top).replace(/\s+/g, '')
-    this.paintBubble(text, UNO_COLOR_CSS[top.color] ?? '#fde68a')
+    // 「张三 红3」
+    const card = cardLabel(top).replace(/\s+/g, '')
+    const text = `${name} ${card}`
+    this.paintBubble(text, (top.color && UNO_COLOR_CSS[top.color]) || '#fde68a')
     this.labelSprite.visible = true
   }
 
@@ -238,10 +249,10 @@ export class HomeBase {
     ctx.roundRect(8, 12, w - 16, h - 24, 16)
     ctx.fill()
     ctx.fillStyle = fillCss
-    ctx.font = 'bold 36px system-ui, sans-serif'
+    ctx.font = 'bold 32px system-ui, sans-serif'
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
-    const text = title.length > 10 ? `${title.slice(0, 9)}…` : title
+    const text = title.length > 12 ? `${title.slice(0, 11)}…` : title
     ctx.fillText(text, w / 2, h / 2)
     this.labelTex.needsUpdate = true
   }
@@ -343,14 +354,17 @@ export class HomeYard {
     for (const home of this.homes) {
       const owner = bySlot.get(home.slotIndex)
       if (owner?.isMine) {
+        home.setOwnerName(owner.name)
         home.setHasOwner(true)
         home.setMine(true)
       } else if (owner) {
         home.setMine(false)
+        home.setOwnerName(owner.name)
         home.setHasOwner(true)
       } else {
         const offlineMine =
           home.slotIndex === opts.localHomeIndex && !opts.localPlayerId
+        home.setOwnerName(offlineMine ? '你' : '')
         home.setMine(offlineMine)
         home.setHasOwner(offlineMine)
       }

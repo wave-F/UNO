@@ -2,8 +2,8 @@
 
 import type { UnoCardData } from './uno/types.ts'
 
-/** Phase 4: multi-room lobby + host start. */
-export const PROTOCOL_VERSION = 4
+/** Phase 5: server-side bots. */
+export const PROTOCOL_VERSION = 5
 
 export const DEFAULT_WS_PORT = 8787
 export const MAX_PLAYERS = 4
@@ -81,6 +81,12 @@ export type ClientMessage =
       type: 'leave_room'
     }
   | {
+      type: 'add_bot'
+    }
+  | {
+      type: 'remove_bot'
+    }
+  | {
       type: 'ping'
       t: number
     }
@@ -90,6 +96,11 @@ export type ClientMessage =
       x: number
       y: number
       z: number
+      yaw: number
+    }
+  | {
+      /** Melee swing with top-of-stack item (e.g. stun bat). */
+      type: 'attack'
       yaw: number
     }
 
@@ -103,6 +114,8 @@ export type PublicPlayer = {
   isHost: boolean
   /** Corner home slot 0–3 (see shared/config/home.ts). */
   homeIndex: number
+  /** Server-side AI seat. */
+  isBot?: boolean
 }
 
 export type ServerMessage =
@@ -120,6 +133,7 @@ export type ServerMessage =
       groundCards: GroundCardWire[]
       yourStack: UnoCardData[]
       yourScore: number
+      yourItem: UnoCardData | null
       scores: ScoreEntry[]
       /** Everyone's backpack for remote avatar visuals (incl. self). */
       playerStacks: PlayerStackEntry[]
@@ -158,6 +172,13 @@ export type ServerMessage =
     }
   | {
       type: 'cards_spawned'
+      cards: GroundCardWire[]
+      /** If set, client plays burst fly-out from this point (e.g. stun drop). */
+      burstFrom?: { x: number; y: number; z: number }
+    }
+  | {
+      /** Full ground replace — client clears field then spawns these. */
+      type: 'ground_snapshot'
       cards: GroundCardWire[]
     }
   | {
@@ -198,6 +219,14 @@ export type ServerMessage =
       type: 'private_state'
       stack: UnoCardData[]
       score: number
+      /** Hand weapon / item (not part of backpack). */
+      item: UnoCardData | null
+    }
+  | {
+      /** Public: who is holding a weapon item. */
+      type: 'player_item'
+      playerId: string
+      item: UnoCardData | null
     }
   | {
       /** Broadcast: player backpack changed — update remote avatar cards. */
@@ -208,6 +237,23 @@ export type ServerMessage =
   | {
       type: 'scores'
       scores: ScoreEntry[]
+    }
+  | {
+      /** Stun applied / refreshed. until = server epoch ms. */
+      type: 'player_stunned'
+      playerId: string
+      until: number
+      durationMs: number
+    }
+  | {
+      type: 'attack_hit'
+      attackerId: string
+      victimId: string
+      dropped: number
+    }
+  | {
+      type: 'attack_miss'
+      attackerId: string
     }
   | {
       type: 'pong'
@@ -241,7 +287,10 @@ export function isClientMessage(data: unknown): data is ClientMessage {
     t === 'set_ready' ||
     t === 'start_game' ||
     t === 'leave_room' ||
+    t === 'add_bot' ||
+    t === 'remove_bot' ||
     t === 'ping' ||
-    t === 'pose'
+    t === 'pose' ||
+    t === 'attack'
   )
 }

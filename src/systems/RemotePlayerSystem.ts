@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { TRAINING_DUMMY_ID } from '../../shared/config/dummy'
 import type { PlayerPose, PublicPlayer } from '../../shared/protocol'
 import type { UnoCardData } from '../../shared/uno/types'
 import { RemotePlayer } from '../entities/RemotePlayer'
@@ -10,6 +11,7 @@ export class RemotePlayerSystem {
   private names = new Map<string, string>()
   /** Last known backpack per player (applied when remote mesh is created). */
   private stacks = new Map<string, UnoCardData[]>()
+  private items = new Map<string, UnoCardData>()
   private localId: string | null = null
   private colorSeq = 0
 
@@ -48,6 +50,7 @@ export class RemotePlayerSystem {
   applyWorldState(poses: readonly PlayerPose[]): void {
     for (const pose of poses) {
       if (pose.id === this.localId) continue
+      if (pose.id === TRAINING_DUMMY_ID) continue
       let remote = this.remotes.get(pose.id)
       if (!remote) {
         const name = this.names.get(pose.id) ?? pose.id.slice(0, 6)
@@ -59,6 +62,7 @@ export class RemotePlayerSystem {
 
   /** Authoritative backpack for a player (local id ignored — local uses private_state). */
   setPlayerStack(playerId: string, stack: readonly UnoCardData[]): void {
+    if (playerId === TRAINING_DUMMY_ID) return
     const copy = [...stack]
     this.stacks.set(playerId, copy)
     if (playerId === this.localId) return
@@ -77,9 +81,30 @@ export class RemotePlayerSystem {
 
   clearAllStacks(): void {
     this.stacks.clear()
+    this.items.clear()
     for (const r of this.remotes.values()) {
       r.player.setHeldStack([])
+      r.player.setHeldItem(null)
     }
+  }
+
+  setPlayerItem(playerId: string, item: UnoCardData | null): void {
+    if (item) this.items.set(playerId, item)
+    else this.items.delete(playerId)
+    if (playerId === this.localId) return
+    const remote = this.remotes.get(playerId)
+    if (remote) remote.player.setHeldItem(item)
+  }
+
+  playSwing(playerId: string): void {
+    if (playerId === this.localId) return
+    this.remotes.get(playerId)?.player.playSwing()
+  }
+
+  setStunned(playerId: string, untilMs: number, durationMs = 1500): void {
+    if (playerId === this.localId) return
+    if (playerId === TRAINING_DUMMY_ID) return
+    this.remotes.get(playerId)?.player.setStunnedUntil(untilMs, durationMs)
   }
 
   update(dt: number): void {
@@ -90,6 +115,7 @@ export class RemotePlayerSystem {
     for (const id of [...this.remotes.keys()]) this.remove(id)
     this.names.clear()
     this.stacks.clear()
+    this.items.clear()
     this.localId = null
   }
 
@@ -103,6 +129,8 @@ export class RemotePlayerSystem {
     this.group.add(remote.root)
     const held = this.stacks.get(id)
     if (held?.length) remote.player.setHeldStack(held)
+    const item = this.items.get(id)
+    if (item) remote.player.setHeldItem(item)
     return remote
   }
 
@@ -113,5 +141,6 @@ export class RemotePlayerSystem {
     r.dispose()
     this.remotes.delete(id)
     this.stacks.delete(id)
+    this.items.delete(id)
   }
 }
