@@ -5,6 +5,7 @@
 import { cardSpawnConfig, CARD_PICKUP_RADIUS } from '../shared/config/cards.ts'
 import {
   getHomeSlot,
+  HOME_FENCE_DEATH_MS,
   homeConfig,
   isInsideAnyHome,
   isInsideHomeSlot,
@@ -81,6 +82,8 @@ export type PlayerGameState = {
   stolenFromHomes: Set<number>
   /** Stun ends at this epoch ms (0 = not stunned). */
   stunUntil: number
+  /** Death (home fence) ends at this epoch ms (0 = alive). */
+  deathUntil: number
   lastAttackAt: number
   /** After G-drop: cannot re-pick hand items until this epoch ms. */
   itemPickupBlockUntil: number
@@ -165,6 +168,20 @@ export type GameSimEvents = {
   }) => void
   /** Full ground replace (client must clear then add). */
   onGroundSnapshot: (cards: GroundCard[]) => void
+  /** Home slots with active electric fence (owner standing on platform). */
+  onHomeFences: (active: number[]) => void
+  onPlayerDied: (info: {
+    playerId: string
+    fenceHomeIndex: number
+    until: number
+    durationMs: number
+  }) => void
+  onPlayerRespawned: (info: {
+    playerId: string
+    x: number
+    y: number
+    z: number
+  }) => void
 }
 
 export class GameSim {
@@ -176,6 +193,8 @@ export class GameSim {
   private started = false
   /** When > 0, refill dummy backpack after this epoch ms. */
   private dummyRefillAt = 0
+  /** Last broadcast fence set (slot indices). */
+  private lastFenceActive: number[] = []
   private readonly events: GameSimEvents
 
   constructor(events: GameSimEvents) {
@@ -260,6 +279,7 @@ export class GameSim {
       homeIndex,
       stolenFromHomes: new Set(),
       stunUntil: 0,
+      deathUntil: 0,
       lastAttackAt: 0,
       itemPickupBlockUntil: 0,
       lastSlideAt: 0,
@@ -284,11 +304,14 @@ export class GameSim {
       p.lastIllegalCardId = null
       p.stolenFromHomes.clear()
       p.stunUntil = 0
+      p.deathUntil = 0
       p.lastAttackAt = 0
       p.itemPickupBlockUntil = 0
       p.lastSlideAt = 0
       p.slideBusyUntil = 0
     }
+    this.lastFenceActive = []
+    this.events.onHomeFences([])
   }
 
   getTrapsSnapshot(): PlacedTrap[] {
@@ -309,11 +332,39 @@ export class GameSim {
     return !!p && p.stunUntil > now
   }
 
-  /** Stunned or mid slide/recover — no pickup / attack / slide. */
+  isDead(playerId: string, now = Date.now()): boolean {
+    const p = this.players.get(playerId)
+    return !!p && p.deathUntil > now
+  }
+
+  /** Dead, stunned, or mid slide/recover — no pickup / attack / slide. */
   isActionLocked(playerId: string, now = Date.now()): boolean {
     const p = this.players.get(playerId)
     if (!p) return true
-    return p.stunUntil > now || p.slideBusyUntil > now
+    return p.deathUntil > now || p.stunUntil > now || p.slideBusyUntil > now
+  }
+
+  /** Last computed active fence slots (for bot pathing). */
+  getLastFenceActive(): readonly number[] {
+    return this.lastFenceActive
+  }
+
+  /** Home slots currently powered (owner on platform). Needs live poses. */
+  getActiveFenceHomes(
+    poses: Map<string, { x: number; y: number; z: number }>,
+  ): number[] {
+    const active: number[] = []
+    const now = Date.now()
+    for (const [id, p] of this.players) {
+      if (id === TRAINING_DUMMY_ID) continue
+      if (p.deathUntil > now) continue
+      const pos = poses.get(id)
+      if (!pos) continue
+      if (isInsideHomeSlot(p.homeIndex, pos.x, pos.z)) {
+        active.push(p.homeIndex)
+      }
+    }
+    return active.sort((a, b) => a - b)
   }
 
   removePlayer(playerId: string, dropAt: { x: number; z: number } | null): void {
@@ -401,9 +452,13 @@ export class GameSim {
     // Step on skip traps before interact (stunned victims still trigger? no — only walking)
     this.checkTrapSteps(poses)
 
+    // Home electric fence: owner home → zap intruders; then respawns
+    this.checkHomeFences(poses)
+    this.processRespawns(poses)
+
     for (const [playerId, pose] of poses) {
       if (playerId === TRAINING_DUMMY_ID) continue
-      // Stunned / slide recover: no pickup / deposit / steal
+      // Dead / stunned / slide recover: no pickup / deposit / steal
       if (this.isActionLocked(playerId)) continue
       this.tryInteract(playerId, pose.x, pose.z)
     }
@@ -429,7 +484,7 @@ export class GameSim {
       for (const [playerId, pose] of poses) {
         if (playerId === TRAINING_DUMMY_ID) continue
         if (playerId === trap.ownerId) continue
-        if (this.isStunned(playerId, now)) continue
+        if (this.isStunned(playerId, now) || this.isDead(playerId, now)) continue
         const d = Math.hypot(pose.x - trap.x, pose.z - trap.z)
         if (d > SKIP_TRAP_RADIUS) continue
 
@@ -456,9 +511,30 @@ export class GameSim {
   }
 
   /** Immediate interaction after a pose update (no spawn). */
-  interactOne(playerId: string, x: number, z: number): void {
+  interactOne(
+    playerId: string,
+    x: number,
+    z: number,
+    poses?: Map<string, { x: number; y: number; z: number }>,
+  ): void {
     if (!this.started) return
     if (this.isActionLocked(playerId)) return
+    // Fast path: zap on step-in before steal / deposit
+    if (poses) {
+      const active = this.getActiveFenceHomes(poses)
+      const slot = this.homeSlotAt(x, z)
+      const p = this.players.get(playerId)
+      if (
+        p &&
+        slot !== null &&
+        slot !== p.homeIndex &&
+        active.includes(slot)
+      ) {
+        const pos = poses.get(playerId) ?? { x, y: 1, z }
+        this.electrocute(playerId, pos, slot, poses)
+        return
+      }
+    }
     this.tryInteract(playerId, x, z)
   }
 
@@ -487,7 +563,7 @@ export class GameSim {
     if (!this.started) return
     const now = Date.now()
     const p = this.players.get(playerId)
-    if (!p || !p.item || this.isStunned(playerId, now)) return
+    if (!p || !p.item || this.isActionLocked(playerId, now)) return
     const pos = poses.get(playerId)
     if (!pos) return
 
@@ -528,7 +604,7 @@ export class GameSim {
     if (!this.started) return
     const now = Date.now()
     const atk = this.players.get(attackerId)
-    if (!atk || this.isStunned(attackerId, now)) return
+    if (!atk || this.isActionLocked(attackerId, now)) return
     if (now - atk.lastAttackAt < ATTACK_COOLDOWN_MS) return
     if (!atk.item) return
 
@@ -627,7 +703,7 @@ export class GameSim {
     let bestT = Infinity
     for (const [id] of this.players) {
       if (id === attackerId) continue
-      if (this.isStunned(id, now)) continue // 眩晕中不能被铲
+      if (this.isStunned(id, now) || this.isDead(id, now)) continue // 眩晕/死亡不能被铲
       const pos = poses.get(id)
       if (!pos) continue
       const hit = pointNearSegment(
@@ -680,7 +756,7 @@ export class GameSim {
     const vic = this.players.get(victimId)
     const vp = poses.get(victimId)
     if (!vic || !vp) return
-    if (this.isStunned(victimId, now)) return
+    if (this.isStunned(victimId, now) || this.isDead(victimId, now)) return
 
     let kx = dirX
     let kz = dirZ
@@ -747,6 +823,105 @@ export class GameSim {
     this.emitScores()
   }
 
+  /**
+   * Owner on platform → fence on; non-owner on that platform → die, drop all.
+   */
+  private checkHomeFences(
+    poses: Map<string, { x: number; y: number; z: number }>,
+  ): void {
+    const active = this.getActiveFenceHomes(poses)
+    const same =
+      active.length === this.lastFenceActive.length &&
+      active.every((v, i) => v === this.lastFenceActive[i])
+    if (!same) {
+      this.lastFenceActive = active
+      this.events.onHomeFences(active)
+    }
+
+    const now = Date.now()
+    const activeSet = new Set(active)
+    for (const [playerId, pose] of poses) {
+      if (playerId === TRAINING_DUMMY_ID) continue
+      const p = this.players.get(playerId)
+      if (!p || p.deathUntil > now) continue
+      const slot = this.homeSlotAt(pose.x, pose.z)
+      if (slot === null || slot === p.homeIndex) continue
+      if (!activeSet.has(slot)) continue
+      this.electrocute(playerId, pose, slot, poses)
+    }
+  }
+
+  private processRespawns(
+    poses: Map<string, { x: number; y: number; z: number }>,
+  ): void {
+    const now = Date.now()
+    for (const [playerId, p] of this.players) {
+      if (playerId === TRAINING_DUMMY_ID) continue
+      if (p.deathUntil <= 0 || p.deathUntil > now) continue
+      p.deathUntil = 0
+      p.stunUntil = 0
+      p.slideBusyUntil = 0
+      const sp = getHomeSlot(p.homeIndex).spawn
+      poses.set(playerId, { x: sp.x, y: sp.y, z: sp.z })
+      this.events.onPlayerRespawned({
+        playerId,
+        x: sp.x,
+        y: sp.y,
+        z: sp.z,
+      })
+    }
+  }
+
+  /** Full inventory drop + death timer; no card kept from this home. */
+  private electrocute(
+    playerId: string,
+    pose: { x: number; y: number; z: number },
+    fenceHomeIndex: number,
+    _poses: Map<string, { x: number; y: number; z: number }>,
+  ): void {
+    const p = this.players.get(playerId)
+    if (!p) return
+    const now = Date.now()
+    if (p.deathUntil > now) return
+
+    const dropCards: UnoCardData[] = [...p.stack]
+    if (p.item) dropCards.push(p.item)
+    p.stack = []
+    p.item = null
+    p.lastIllegalCardId = null
+    p.stolenFromHomes.clear()
+    p.stunUntil = 0
+    p.slideBusyUntil = 0
+    p.deathUntil = now + HOME_FENCE_DEATH_MS
+
+    if (dropCards.length) {
+      const dropped: GroundCard[] = dropCards.map((card, i) => {
+        const ang = (i / Math.max(1, dropCards.length)) * Math.PI * 2 + 0.2
+        const rad = 0.55 + (i % 3) * 0.35
+        return {
+          card,
+          x: pose.x + Math.cos(ang) * rad,
+          y: 0.55,
+          z: pose.z + Math.sin(ang) * rad,
+          source: 'stun_drop' as const,
+        }
+      })
+      this.ground.push(...dropped)
+      this.events.onSpawn(dropped, {
+        burstFrom: { x: pose.x, y: pose.y + 0.6, z: pose.z },
+      })
+    }
+
+    this.events.onPrivateState(playerId, [], p.score, null)
+    this.events.onPlayerDied({
+      playerId,
+      fenceHomeIndex,
+      until: p.deathUntil,
+      durationMs: HOME_FENCE_DEATH_MS,
+    })
+    this.emitScores()
+  }
+
   private tryInteract(playerId: string, x: number, z: number): void {
     const p = this.players.get(playerId)
     if (!p) return
@@ -772,9 +947,11 @@ export class GameSim {
       return
     }
 
-    // Other player's home: steal at most 1 card per home per trip (UNO stack rules).
+    // Other player's home: steal only if fence is off (fence check runs first each tick).
     const foreignSlot = this.homeSlotAt(x, z)
     if (foreignSlot !== null && foreignSlot !== p.homeIndex) {
+      // Safety: never steal while that home's fence is listed active
+      if (this.lastFenceActive.includes(foreignSlot)) return
       this.tryStealFromHome(playerId, p, foreignSlot)
       return
     }

@@ -54,6 +54,10 @@ export class HomeBase {
   private hasOwner = false
   /** Display name for other players' homes. */
   private ownerName = ''
+  /** Owner is home → electric fence visible to everyone. */
+  private fenceActive = false
+  private readonly fenceGroup = new THREE.Group()
+  private fencePulse = 0
 
   constructor(opts: HomeBaseOptions = {}) {
     this.slotIndex = opts.slotIndex ?? homeConfig.defaultSlot
@@ -157,6 +161,93 @@ export class HomeBase {
 
     this.pileRoot.position.set(0, 0.3, 0)
     this.group.add(this.pileRoot)
+
+    this.buildFenceVisual(halfSize)
+    this.fenceGroup.visible = false
+    this.group.add(this.fenceGroup)
+  }
+
+  /** Toggle electric fence around this home (all clients). */
+  setFenceActive(active: boolean): void {
+    this.fenceActive = active
+    this.fenceGroup.visible = active
+  }
+
+  isFenceActive(): boolean {
+    return this.fenceActive
+  }
+
+  update(dt: number): void {
+    if (!this.fenceActive) return
+    this.fencePulse += dt * 6
+    const op = 0.45 + 0.35 * (0.5 + 0.5 * Math.sin(this.fencePulse))
+    this.fenceGroup.traverse((obj) => {
+      const m = (obj as THREE.Mesh).material
+      if (m && 'opacity' in m) {
+        ;(m as THREE.MeshBasicMaterial).opacity = op
+      }
+    })
+  }
+
+  private buildFenceVisual(halfSize: number): void {
+    const h = 2.4
+    const y = h / 2 + 0.2
+    const t = 0.08
+    const inset = 0.05
+    const half = halfSize + inset
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0x67e8f9,
+      transparent: true,
+      opacity: 0.65,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    })
+    // Four vertical wall panels around platform rim
+    const walls: [number, number, number, number][] = [
+      [0, half, half * 2, t], // +z
+      [0, -half, half * 2, t], // -z
+      [half, 0, t, half * 2], // +x
+      [-half, 0, t, half * 2], // -x
+    ]
+    for (const [px, pz, sx, sz] of walls) {
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(sx, h, sz), mat.clone())
+      mesh.position.set(px, y, pz)
+      this.fenceGroup.add(mesh)
+    }
+    // Top glow ring
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(half - 0.15, half + 0.12, 48),
+      new THREE.MeshBasicMaterial({
+        color: 0x22d3ee,
+        transparent: true,
+        opacity: 0.75,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    )
+    ring.rotation.x = -Math.PI / 2
+    ring.position.y = h + 0.25
+    this.fenceGroup.add(ring)
+
+    // Corner lightning posts
+    const postMat = new THREE.MeshBasicMaterial({
+      color: 0xa5f3fc,
+      transparent: true,
+      opacity: 0.9,
+    })
+    for (const [px, pz] of [
+      [half, half],
+      [half, -half],
+      [-half, half],
+      [-half, -half],
+    ] as const) {
+      const post = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.08, 0.1, h + 0.3, 6),
+        postMat.clone(),
+      )
+      post.position.set(px, y, pz)
+      this.fenceGroup.add(post)
+    }
   }
 
   setMine(isMine: boolean): void {
@@ -262,6 +353,15 @@ export class HomeBase {
     this.labelTex.dispose()
     ;(this.labelSprite.material as THREE.SpriteMaterial).dispose()
     ;(this.mineRing.material as THREE.Material).dispose()
+    this.fenceGroup.traverse((obj) => {
+      const mesh = obj as THREE.Mesh
+      if (mesh.geometry) mesh.geometry.dispose()
+      if (mesh.material) {
+        const m = mesh.material
+        if (Array.isArray(m)) m.forEach((x) => x.dispose())
+        else m.dispose()
+      }
+    })
   }
 
   private rebuildVisiblePile(): void {
@@ -306,6 +406,16 @@ export class HomeYard {
 
   get(slotIndex: number): HomeBase {
     return this.homes[((slotIndex % 4) + 4) % 4]!
+  }
+
+  /** Sync electric fences from server (or offline local owner). */
+  setActiveFences(activeSlots: readonly number[]): void {
+    const set = new Set(activeSlots)
+    for (const h of this.homes) h.setFenceActive(set.has(h.slotIndex))
+  }
+
+  update(dt: number): void {
+    for (const h of this.homes) h.update(dt)
   }
 
   depositTo(slotIndex: number, cards: readonly UnoCardData[]): number {

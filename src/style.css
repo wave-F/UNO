@@ -96,9 +96,9 @@ canvas {
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
 }
 
-#debug-panel {
+#debug-panel,
+#debug-panel-left {
   position: fixed;
-  right: 14px;
   top: 50%;
   transform: translateY(-50%);
   z-index: 30;
@@ -112,6 +112,23 @@ canvas {
   pointer-events: auto;
   user-select: none;
   min-width: 112px;
+}
+
+#debug-panel {
+  right: 14px;
+}
+
+#debug-panel-left {
+  left: 14px;
+}
+
+.debug-btn-dummy {
+  background: #a78bfa;
+}
+
+.debug-btn-dummy.active {
+  background: #7c3aed;
+  color: #f8fafc;
 }
 
 .debug-title {
@@ -218,6 +235,109 @@ canvas {
   margin-top: 4px;
   font-size: 12px;
   opacity: 0.9;
+}
+
+#death-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 35;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(8, 47, 73, 0.55) 0%,
+    rgba(15, 23, 42, 0.88) 70%
+  );
+  pointer-events: none;
+}
+
+#death-mask[hidden] {
+  display: none !important;
+}
+
+.death-card {
+  text-align: center;
+  padding: 28px 36px;
+  border-radius: 18px;
+  background: linear-gradient(160deg, rgba(22, 78, 99, 0.95), rgba(15, 23, 42, 0.98));
+  border: 2px solid rgba(103, 232, 249, 0.65);
+  box-shadow: 0 0 40px rgba(34, 211, 238, 0.35);
+  color: #e0f2fe;
+  min-width: 220px;
+}
+
+.death-title {
+  font-size: 28px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  color: #67e8f9;
+  text-shadow: 0 0 12px rgba(34, 211, 238, 0.8);
+}
+
+.death-sub {
+  margin-top: 8px;
+  font-size: 13px;
+  opacity: 0.85;
+}
+
+.death-cd {
+  margin-top: 16px;
+  font-size: 52px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  color: #f0fdfa;
+  line-height: 1;
+}
+
+.death-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+/* Top banner: first time a player is within last N of win */
+#uno-moment-banner {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  z-index: 35;
+  transform: translateX(-50%) translateY(-12px);
+  max-width: min(640px, calc(100vw - 24px));
+  padding: 12px 28px;
+  border-radius: 14px;
+  font-size: 1.15rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-align: center;
+  color: #1a0a00;
+  background: linear-gradient(100deg, #fbbf24 0%, #f59e0b 45%, #ef4444 100%);
+  border: 2px solid rgba(255, 255, 255, 0.55);
+  box-shadow:
+    0 8px 28px rgba(239, 68, 68, 0.35),
+    0 0 0 1px rgba(0, 0, 0, 0.12);
+  pointer-events: none;
+  opacity: 0;
+}
+
+#uno-moment-banner[hidden] {
+  display: none !important;
+}
+
+#uno-moment-banner.in {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+  transition:
+    opacity 0.22s ease-out,
+    transform 0.28s cubic-bezier(0.22, 1.2, 0.36, 1);
+}
+
+#uno-moment-banner.out {
+  opacity: 0;
+  transform: translateX(-50%) translateY(-10px);
+  transition:
+    opacity 0.25s ease-in,
+    transform 0.25s ease-in;
 }
 
 #match-result {

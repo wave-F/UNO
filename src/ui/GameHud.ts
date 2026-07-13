@@ -31,6 +31,16 @@ export class GameHud {
   private timerRaf = 0
   private onDebugGive: ((kind: 'stun_bat' | 'skip_trap') => void) | null = null
 
+  private deathEl: HTMLDivElement | null = null
+  private deathCdEl: HTMLDivElement | null = null
+  private deathUntil = 0
+  private deathRaf = 0
+  private onToggleDummy: (() => void) | null = null
+  private dummyBtn: HTMLButtonElement | null = null
+
+  private readonly unoBannerEl: HTMLDivElement
+  private unoBannerTimer: number | null = null
+
   constructor() {
     this.root = document.createElement('div')
     this.root.id = 'hud'
@@ -90,6 +100,21 @@ export class GameHud {
       this.onDebugGive?.('skip_trap')
     })
 
+    // Left-side: show/hide training dummy
+    const left = document.createElement('div')
+    left.id = 'debug-panel-left'
+    left.innerHTML = `
+      <div class="debug-title">场景</div>
+      <button type="button" id="dbg-dummy" class="debug-btn debug-btn-dummy">显示木头人</button>
+    `
+    document.body.appendChild(left)
+    this.dummyBtn = left.querySelector('#dbg-dummy')
+    this.dummyBtn?.addEventListener('click', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      this.onToggleDummy?.()
+    })
+
     // Bottom-right slide skill icon + cooldown
     this.skillRoot = document.createElement('div')
     this.skillRoot.id = 'skill-slide'
@@ -104,10 +129,103 @@ export class GameHud {
     document.body.appendChild(this.skillRoot)
     this.skillCdMask = this.skillRoot.querySelector('#skill-cd-mask')!
     this.skillCdText = this.skillRoot.querySelector('#skill-cd-text')!
+
+    // Full-screen death mask + countdown
+    this.deathEl = document.createElement('div')
+    this.deathEl.id = 'death-mask'
+    this.deathEl.hidden = true
+    this.deathEl.innerHTML = `
+      <div class="death-card">
+        <div class="death-title">触电身亡</div>
+        <div class="death-sub">老家电网 · 背包与道具已掉落</div>
+        <div class="death-cd" id="death-cd">5.0</div>
+        <div class="death-hint">秒后在自家重生</div>
+      </div>
+    `
+    document.body.appendChild(this.deathEl)
+    this.deathCdEl = this.deathEl.querySelector('#death-cd')
+
+    // Top-of-screen one-shot UNO moment banner
+    this.unoBannerEl = document.createElement('div')
+    this.unoBannerEl.id = 'uno-moment-banner'
+    this.unoBannerEl.hidden = true
+    document.body.appendChild(this.unoBannerEl)
+  }
+
+  /** Room-wide banner: player within last N cards of win (server one-shot). */
+  showUnoMoment(message: string, durationMs = 4200): void {
+    this.unoBannerEl.hidden = false
+    this.unoBannerEl.textContent = message
+    this.unoBannerEl.classList.remove('out')
+    // reflow so enter animation restarts
+    void this.unoBannerEl.offsetWidth
+    this.unoBannerEl.classList.add('in')
+    if (this.unoBannerTimer !== null) window.clearTimeout(this.unoBannerTimer)
+    this.unoBannerTimer = window.setTimeout(() => {
+      this.unoBannerEl.classList.remove('in')
+      this.unoBannerEl.classList.add('out')
+      this.unoBannerTimer = window.setTimeout(() => {
+        this.unoBannerEl.hidden = true
+        this.unoBannerEl.classList.remove('out')
+        this.unoBannerTimer = null
+      }, 280)
+    }, durationMs)
+  }
+
+  hideUnoMoment(): void {
+    if (this.unoBannerTimer !== null) {
+      window.clearTimeout(this.unoBannerTimer)
+      this.unoBannerTimer = null
+    }
+    this.unoBannerEl.hidden = true
+    this.unoBannerEl.classList.remove('in', 'out')
+    this.unoBannerEl.textContent = ''
+  }
+
+  /** Local player electrocuted — dark overlay until server respawn. */
+  showDeath(untilMs: number, durationMs = 5000): void {
+    if (!this.deathEl || !this.deathCdEl) return
+    this.deathUntil = untilMs
+    this.deathEl.hidden = false
+    if (this.deathRaf) cancelAnimationFrame(this.deathRaf)
+    this.tickDeath()
+    void durationMs
+  }
+
+  hideDeath(): void {
+    if (this.deathEl) this.deathEl.hidden = true
+    this.deathUntil = 0
+    if (this.deathRaf) {
+      cancelAnimationFrame(this.deathRaf)
+      this.deathRaf = 0
+    }
+  }
+
+  private tickDeath = (): void => {
+    if (!this.deathEl || !this.deathCdEl) return
+    const left = this.deathUntil - Date.now()
+    if (left <= 0) {
+      // Wait for server respawn event to hide (or hide if slightly overdue)
+      this.deathCdEl.textContent = '0.0'
+      this.deathRaf = requestAnimationFrame(this.tickDeath)
+      return
+    }
+    this.deathCdEl.textContent = (left / 1000).toFixed(1)
+    this.deathRaf = requestAnimationFrame(this.tickDeath)
   }
 
   setDebugGiveListener(cb: (kind: 'stun_bat' | 'skip_trap') => void): void {
     this.onDebugGive = cb
+  }
+
+  setToggleDummyListener(cb: () => void): void {
+    this.onToggleDummy = cb
+  }
+
+  setDummyButtonState(visible: boolean): void {
+    if (!this.dummyBtn) return
+    this.dummyBtn.textContent = visible ? '隐藏木头人' : '显示木头人'
+    this.dummyBtn.classList.toggle('active', visible)
   }
 
   /** Start local slide cooldown UI (default 5s). */
@@ -170,6 +288,7 @@ export class GameHud {
     message: string
     winScore: number
   }, localId: string | null): void {
+    this.hideUnoMoment()
     this.clearSlideCooldown()
     this.setMatchClock(null, info.winScore)
     const youWin = info.winners.some((w) => w.id === localId)

@@ -64,6 +64,9 @@ export const homeSlots: readonly HomeSlotDef[] = [
   },
 ] as const
 
+/** Death lock after stepping into an active home electric fence (ms). */
+export const HOME_FENCE_DEATH_MS = 5000
+
 export const homeConfig = {
   /** Shared platform half-extent (full size = halfSize * 2). */
   halfSize: 4.2,
@@ -74,6 +77,8 @@ export const homeConfig = {
   /** @deprecated use getHomeSlot(0).center — kept for short call sites */
   center: homeSlots[0]!.center,
   spawn: homeSlots[0]!.spawn,
+  /** Respawn delay after fence electrocution. */
+  fenceDeathMs: HOME_FENCE_DEATH_MS,
 } as const
 
 export function getHomeSlot(index: number): HomeSlotDef {

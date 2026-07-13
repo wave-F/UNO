@@ -35,14 +35,24 @@ game
     game.setPointerLockListener((locked) => hud.setPointerLocked(locked))
     game.setMatchClockListener((endsAt, winScore) => {
       hud.setMatchClock(endsAt, winScore)
+      // New match: dummy hidden until user clicks left button
+      if (endsAt != null) hud.setDummyButtonState(false)
     })
     game.setMatchEndListener((info) => {
       hud.showMatchEnd(info, net.playerId)
+      hud.setDummyButtonState(false)
       lobby.show()
       lobby.flashMatchEnd(info.message)
     })
+    game.setUnoMomentListener((info) => {
+      hud.showUnoMoment(info.message)
+    })
     game.setSlideCdListener(() => {
       hud.startSlideCooldown()
+    })
+    game.setDeathListener((info) => {
+      if (info) hud.showDeath(info.until, info.durationMs)
+      else hud.hideDeath()
     })
     hud.setDebugGiveListener((kind) => {
       if (!net.isPlaying) {
@@ -57,6 +67,31 @@ game
       hud.handleFeedback({
         type: 'toast',
         text: kind === 'stun_bat' ? '已添加狼牙棒到手持' : '已添加 Skip 到手持',
+        kind: 'ok',
+      })
+    })
+    hud.setToggleDummyListener(() => {
+      if (!net.isPlaying) {
+        hud.handleFeedback({
+          type: 'toast',
+          text: '请先进入对局',
+          kind: 'bad',
+        })
+        return
+      }
+      const next = !game.isDummyVisible()
+      if (!game.setDummyVisible(next)) {
+        hud.handleFeedback({
+          type: 'toast',
+          text: '木头人暂不可用',
+          kind: 'bad',
+        })
+        return
+      }
+      hud.setDummyButtonState(next)
+      hud.handleFeedback({
+        type: 'toast',
+        text: next ? '已显示木头人（场地中央）' : '已隐藏木头人',
         kind: 'ok',
       })
     })

@@ -24,6 +24,8 @@ export class PlayerController {
     null
   /** Client-local stun end time (performance.now or Date). */
   private stunUntilMs = 0
+  /** Client-local death end time (server epoch ms, same clock as stun). */
+  private deathUntilMs = 0
   /** Mace knock arc (body center XZ). */
   private knock: {
     t: number
@@ -84,9 +86,27 @@ export class PlayerController {
     this.stunUntilMs = Math.max(this.stunUntilMs, untilMs)
   }
 
+  /** Death lock until epoch ms (Date.now). */
+  setDeathUntil(untilMs: number): void {
+    this.deathUntilMs = Math.max(this.deathUntilMs, untilMs)
+    this.horizVel.set(0, 0, 0)
+    this.verticalVel = 0
+    this.knock = null
+    this.slide = null
+  }
+
+  clearDeath(): void {
+    this.deathUntilMs = 0
+  }
+
+  isDead(now = Date.now()): boolean {
+    return now < this.deathUntilMs
+  }
+
   isStunned(now = Date.now()): boolean {
     return (
       now < this.stunUntilMs ||
+      now < this.deathUntilMs ||
       this.knock !== null ||
       this.slide !== null
     )

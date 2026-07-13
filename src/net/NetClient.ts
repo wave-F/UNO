@@ -59,6 +59,14 @@ export type NetClientEvents = {
     winScore: number
     message: string
   }) => void
+  unoMoment: (info: {
+    playerId: string
+    playerName: string
+    score: number
+    remaining: number
+    winScore: number
+    message: string
+  }) => void
   playerJoined: (player: PublicPlayer) => void
   playerLeft: (playerId: string, reason: string) => void
   playerReconnected: (playerId: string) => void
@@ -137,6 +145,19 @@ export type NetClientEvents = {
     trapId: string
     ownerId: string
     victimId: string
+  }) => void
+  homeFences: (active: number[]) => void
+  playerDied: (info: {
+    playerId: string
+    fenceHomeIndex: number
+    until: number
+    durationMs: number
+  }) => void
+  playerRespawned: (info: {
+    playerId: string
+    x: number
+    y: number
+    z: number
   }) => void
   error: (code: string, message: string) => void
   pong: (rttMs: number) => void
@@ -490,6 +511,16 @@ export class NetClient {
           message: msg.message,
         })
         break
+      case 'uno_moment':
+        this.emit('unoMoment', {
+          playerId: msg.playerId,
+          playerName: msg.playerName,
+          score: msg.score,
+          remaining: msg.remaining,
+          winScore: msg.winScore,
+          message: msg.message,
+        })
+        break
       case 'player_joined':
         this.emit('playerJoined', msg.player)
         break
@@ -586,6 +617,25 @@ export class NetClient {
           trapId: msg.trapId,
           ownerId: msg.ownerId,
           victimId: msg.victimId,
+        })
+        break
+      case 'home_fences':
+        this.emit('homeFences', msg.active)
+        break
+      case 'player_died':
+        this.emit('playerDied', {
+          playerId: msg.playerId,
+          fenceHomeIndex: msg.fenceHomeIndex,
+          until: msg.until,
+          durationMs: msg.durationMs,
+        })
+        break
+      case 'player_respawned':
+        this.emit('playerRespawned', {
+          playerId: msg.playerId,
+          x: msg.x,
+          y: msg.y,
+          z: msg.z,
         })
         break
       case 'pong': {

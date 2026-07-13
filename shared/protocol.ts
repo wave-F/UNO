@@ -2,8 +2,8 @@
 
 import type { UnoCardData } from './uno/types.ts'
 
-/** Phase 6: match timer + win conditions. */
-export const PROTOCOL_VERSION = 6
+/** Phase 7: home electric fence + death / respawn. */
+export const PROTOCOL_VERSION = 7
 
 export const DEFAULT_WS_PORT = 8787
 export const MAX_PLAYERS = 4
@@ -196,6 +196,16 @@ export type ServerMessage =
       message: string
     }
   | {
+      /** One-time per player: within last N cards of win target. */
+      type: 'uno_moment'
+      playerId: string
+      playerName: string
+      score: number
+      remaining: number
+      winScore: number
+      message: string
+    }
+  | {
       type: 'player_joined'
       player: PublicPlayer
     }
@@ -337,6 +347,28 @@ export type ServerMessage =
       trapId: string
       ownerId: string
       victimId: string
+    }
+  | {
+      /** Which home slots currently have electric fence (owner is home). */
+      type: 'home_fences'
+      active: number[]
+    }
+  | {
+      /** Non-owner stepped into a powered home fence. */
+      type: 'player_died'
+      playerId: string
+      /** Home slot that electrocuted them. */
+      fenceHomeIndex: number
+      until: number
+      durationMs: number
+    }
+  | {
+      /** After death timer: teleported to own home spawn. */
+      type: 'player_respawned'
+      playerId: string
+      x: number
+      y: number
+      z: number
     }
   | {
       type: 'pong'

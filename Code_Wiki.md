@@ -18,6 +18,7 @@
   - **Skip 陷阱**：场上为 Skip 牌面；左键布置到脚下（全员可见、无时限）；**他人**踩中眩晕 2s；**自己不踩中**
 - **不掉对方手持道具**；**眩晕期间不可捡牌/卸货/偷家**
 - **木头人**（场地中央）：可打测试靶，背后叠测试牌，眩晕后自动补牌
+- **老家电网**：主人站在自己老家平台内 → 四周全员可见电网；**非主人踩入即触电死亡**（全掉落背包+手持），**5s** 后自家重生；有电网时不可偷该家
 - **回合胜负**：2 分钟；先把牌送达老家 **20 张**者胜；超时则老家张数最多者胜（`shared/config/match.ts`）
 
 **路线图：**
@@ -28,6 +29,7 @@
 | 联机 Phase 1–4 | 房间/移动/权威卡牌/多房间 | ✅ |
 | 联机 Phase 5 | 机器人 + 眩晕战斗 + 木头人 | ✅ |
 | 联机 Phase 6 | 回合计时 + 20 张胜负 | ✅ |
+| 联机 Phase 7 | 老家电网 + 死亡/重生 | ✅ |
 | 后续 | 静态托管、胜负 UI 等 | ⏳ |
 
 工作区：`/Users/fengbotao/游戏设计/Uno`  
@@ -57,14 +59,14 @@
 | 拓扑 | 主机权威 Listen Server |
 | 传输 | WebSocket（JSON） |
 | 发现 | 主机 IP + 端口 8787 |
-| 协议版本 | `PROTOCOL_VERSION = 6`（含 match_end / 计时） |
+| 协议版本 | `PROTOCOL_VERSION = 7`（含 home_fences / player_died / player_respawned） |
 | 房间 | `RoomManager`：创建/房间码加入；测试房 `0000` 可一点即玩 |
 | 位姿 | 客户端 20Hz 上报；服务器 10Hz 广播；远端插值 ~100ms |
 | 卡牌 | `server/GameSim` 刷牌/拾取/卸货/攻击；客户端仅表现 |
 | 道具 | 手持 `item`（狼牙棒 / Skip）≠ 背包 `stack`；`player_item` 公开同步；互斥 |
 | 攻击 | 棒：锥形命中消耗；Skip：`trap_placed` 布置脚下，踩中 `trap_triggered` |
 | 背上牌 | `private_state` + 全员 `player_stack` |
-| 老家 | 四角 0–3；仅本家卸货 |
+| 老家 | 四角 0–3；仅本家卸货；主人在家 → 电网 |
 | 人数 | 最多 4（+ 非座位木头人 `training_dummy`） |
 | 断线 | 座位保留 15s，`sessionToken` 可重连 |
 
@@ -76,16 +78,16 @@
 Uno/
 ├── shared/
 │   ├── protocol.ts
-│   ├── config/{cards,home,movement,dummy}.ts
+│   ├── config/{cards,home,movement,dummy,match}.ts
 │   └── uno/{types,rules,deck}.ts
 ├── server/
 │   ├── index.ts / RoomManager.ts / Room.ts
-│   ├── GameSim.ts           # 权威卡牌+攻击+木头人
+│   ├── GameSim.ts           # 权威卡牌+攻击+电网+死亡+木头人
 │   └── Bot.ts               # 服务端 AI
 ├── src/
 │   ├── main.ts / core/Game.ts
 │   ├── net/NetClient.ts
-│   ├── entities/{Player,TrainingDummy,AttackRangeVisual,StunFx,SkipTrapMarker,...}
+│   ├── entities/{Player,HomeBase,TrainingDummy,AttackRangeVisual,StunFx,SkipTrapMarker,...}
 │   ├── systems/SkipTrapSystem.ts
 │   ├── game/uno/{cardVisual,maceVisual}.ts
 │   └── ui/{LobbyPanel,GameHud}.ts
@@ -94,21 +96,24 @@ Uno/
 
 | 文件 | 作用 |
 |------|------|
-| `shared/protocol.ts` | 消息类型；`attack` / `player_stunned` / `trap_*` / `ground_snapshot` 等 |
+| `shared/protocol.ts` | 消息类型；`attack` / `player_stunned` / `home_fences` / `player_died` / `player_respawned` / `trap_*` 等 |
+| `shared/config/home.ts` | 四角老家、`HOME_FENCE_DEATH_MS`、`isInsideHomeSlot` |
 | `shared/config/movement.ts` | 背牌减速、基础移速（前后端共用） |
 | `shared/config/dummy.ts` | 木头人 id / 高度 / 补牌张数 |
 | `shared/uno/types.ts` | 牌型、`isStunBat` / `isSkipTrap` / `isHandItem`、眩晕与陷阱常量 |
 | `shared/uno/deck.ts` | 刷牌；`stunFraction` / `skipFraction`；均为 0 时纯数字 |
-| `server/GameSim.ts` | 场上牌、背包、道具、攻击、Skip 陷阱、爆牌、木头人 |
-| `server/Bot.ts` | 机器人寻路、延迟挥棒、近敌布置 Skip |
-| `server/Room.ts` | 房间 tick、位姿、攻击 pose 含木头人；转发 `trap_*` |
+| `server/GameSim.ts` | 场上牌、背包、道具、攻击、Skip 陷阱、**老家电网/死亡/重生**、木头人 |
+| `server/Bot.ts` | 机器人寻路、延迟挥棒、近敌布置 Skip；**避开有电网的家** |
+| `server/Room.ts` | 房间 tick、位姿、死亡锁定 pose、重生 snap；转发 `home_fences` / died / respawned |
 | `src/game/uno/maceVisual.ts` | 程序化狼牙棒网格 |
+| `src/entities/HomeBase.ts` | 老家平台、牌堆、**电网视觉** |
 | `src/entities/SkipTrapMarker.ts` | 已布置 Skip 陷阱地面标记 |
 | `src/systems/SkipTrapSystem.ts` | 客户端陷阱增删/动画 |
 | `src/entities/TrainingDummy.ts` | 中央木头人 + 受击/眩晕表现 |
 | `src/entities/AttackRangeVisual.ts` | 身前攻击扇形（仅狼牙棒） |
 | `src/entities/StunFx.ts` | 头顶眩晕星星 |
 | `src/entities/Player.ts` | 本地/远端豆人 + 手持棒/Skip 牌 + 背牌 |
+| `src/ui/GameHud.ts` | HUD + **触电死亡遮罩倒计时** |
 
 ### npm scripts
 
@@ -138,6 +143,15 @@ npm run build     # tsc + vite build
 - 爆落牌 `source: stun_drop`；木头人补牌 / 重连 welcome 会清理残留爆落；重连 `welcome.traps` 同步陷阱  
 - 机器人：棒在范围内 0.5–1.5s 前摇再挥；持 Skip 时近敌会布置，冷却约 0.8–1.4s  
 
+### 老家电网与死亡
+
+- **开启条件**：主人**未死亡**且站在自己老家 `halfSize` 平台内 → 该 slot 电网激活  
+- **表现**：四角半透明青色围栏（`HomeBase`），**全员可见**；状态广播 `home_fences { active: number[] }`  
+- **触发**：非主人**踩入**有电网的老家平台 → 立即 `player_died`（不只偷牌时）  
+- **惩罚**：背包 + 手持道具**全部掉落**（`stun_drop`）；不可移动/交互；本地全屏遮罩倒计时  
+- **重生**：`HOME_FENCE_DEATH_MS`（默认 5s）后 `player_respawned`，传送到**自己**老家 spawn  
+- **偷家**：有电网时权威端禁止从该家偷牌（先电死后无法 interact）  
+- **单机**：本地站在自己老家同样显示电网（无其他玩家时无触电对象）  
 
 ## 回合胜负
 

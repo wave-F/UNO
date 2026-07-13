@@ -68,7 +68,8 @@ export function cardLabel(card: UnoCardData): string {
 }
 
 /** Attack item constants (server + client). */
-export const STUN_DURATION_MS = 1500
+/** Stun after mace / slide hit (and related combat). */
+export const STUN_DURATION_MS = 2000
 /** Skip trap stun when stepped on. */
 export const SKIP_TRAP_STUN_MS = 2000
 /** Step-on radius for placed skip traps (XZ meters). */

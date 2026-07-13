@@ -22,6 +22,7 @@ import {
 } from '../shared/config/dummy.ts'
 import {
   MATCH_DURATION_MS,
+  MATCH_UNO_REMAINING,
   MATCH_WIN_SCORE,
 } from '../shared/config/match.ts'
 import { BOT_HOME_STAND_Y, BotController } from './Bot.ts'
@@ -81,6 +82,8 @@ export class Room {
   /** Server epoch ms when current round ends (0 if not playing). */
   private matchEndsAt = 0
   private matchEnding = false
+  /** One-shot UNO moment banner per player per match (score first enters last N). */
+  private unoMomentAnnounced = new Set<string>()
   /** Called when room has no seats left. */
   onEmpty: (() => void) | null = null
 
@@ -119,6 +122,7 @@ export class Room {
           score: info.score,
           cards: info.cards,
         })
+        this.maybeAnnounceUnoMoment(info.playerId, info.score)
         this.checkScoreWin()
       },
       onHomeStolen: (info) => {
@@ -213,6 +217,38 @@ export class Room {
         this.broadcast({
           type: 'ground_snapshot',
           cards: cards.map(toWire),
+        })
+      },
+      onHomeFences: (active) => {
+        this.broadcast({ type: 'home_fences', active })
+      },
+      onPlayerDied: (info) => {
+        this.broadcast({
+          type: 'player_died',
+          playerId: info.playerId,
+          fenceHomeIndex: info.fenceHomeIndex,
+          until: info.until,
+          durationMs: info.durationMs,
+        })
+      },
+      onPlayerRespawned: (info) => {
+        const seat = this.seats.get(info.playerId)
+        if (seat) {
+          seat.pose = {
+            x: info.x,
+            y: info.y,
+            z: info.z,
+            yaw: seat.pose?.yaw ?? 0,
+            seq: (seat.pose?.seq ?? 0) + 1,
+          }
+          seat.lastPoseAt = Date.now()
+        }
+        this.broadcast({
+          type: 'player_respawned',
+          playerId: info.playerId,
+          x: info.x,
+          y: info.y,
+          z: info.z,
         })
       },
     })
@@ -464,6 +500,7 @@ export class Room {
       homes.push({ playerId: s.id, homeIndex: s.homeIndex })
     }
     this.game.startMatch()
+    this.unoMomentAnnounced.clear()
     this.matchEndsAt = Date.now() + MATCH_DURATION_MS
     this.ensureTick()
 
@@ -513,6 +550,31 @@ export class Room {
     this.endMatch('score', winners, scores)
   }
 
+  /**
+   * When a player first reaches within MATCH_UNO_REMAINING of win (but not won),
+   * broadcast a one-time top banner for the whole room.
+   */
+  private maybeAnnounceUnoMoment(playerId: string, score: number): void {
+    if (this.phase !== 'playing' || this.matchEnding) return
+    if (playerId === TRAINING_DUMMY_ID) return
+    if (this.unoMomentAnnounced.has(playerId)) return
+    const remaining = MATCH_WIN_SCORE - score
+    if (remaining <= 0 || remaining > MATCH_UNO_REMAINING) return
+    this.unoMomentAnnounced.add(playerId)
+    const seat = this.seats.get(playerId)
+    const playerName = seat?.name || playerId.slice(0, 6)
+    const message = `${playerName}玩家还差${remaining}张牌！UNO时刻！`
+    this.broadcast({
+      type: 'uno_moment',
+      playerId,
+      playerName,
+      score,
+      remaining,
+      winScore: MATCH_WIN_SCORE,
+      message,
+    })
+  }
+
   private checkTimeoutWin(): void {
     if (this.phase !== 'playing' || this.matchEnding) return
     if (!this.matchEndsAt || Date.now() < this.matchEndsAt) return
@@ -535,6 +597,7 @@ export class Room {
     this.matchEnding = true
     this.phase = 'lobby'
     this.matchEndsAt = 0
+    this.unoMomentAnnounced.clear()
 
     let message: string
     if (reason === 'score') {
@@ -672,7 +735,7 @@ export class Room {
 
     seat.pose = { x, y, z, yaw, seq: msg.seq }
     seat.lastPoseAt = now
-    this.game.interactOne(seatId, x, z)
+    this.game.interactOne(seatId, x, z, this.collectPoseMap())
   }
 
   handleDisconnect(ws: WebSocket): void {

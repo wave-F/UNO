@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { WebGPURenderer } from 'three/webgpu'
-import { getHomeSlot, homeConfig } from '../config/home'
+import { getHomeSlot, homeConfig, isInsideHomeSlot } from '../config/home'
 import { initRapier, PhysicsWorld } from './Physics'
 import { InputManager } from '../managers/InputManager'
 import { Environment } from '../entities/Environment'
@@ -105,10 +105,44 @@ export class Game {
     this.onMatchEnd = cb
   }
 
+  private onUnoMoment:
+    | ((info: {
+        playerId: string
+        playerName: string
+        score: number
+        remaining: number
+        winScore: number
+        message: string
+      }) => void)
+    | null = null
+
+  setUnoMomentListener(
+    cb: (info: {
+      playerId: string
+      playerName: string
+      score: number
+      remaining: number
+      winScore: number
+      message: string
+    }) => void,
+  ): void {
+    this.onUnoMoment = cb
+  }
+
   private onSlideCd: (() => void) | null = null
 
   setSlideCdListener(cb: () => void): void {
     this.onSlideCd = cb
+  }
+
+  private onDeath:
+    | ((info: { until: number; durationMs: number } | null) => void)
+    | null = null
+
+  setDeathListener(
+    cb: (info: { until: number; durationMs: number } | null) => void,
+  ): void {
+    this.onDeath = cb
   }
 
   private matchLive = false
@@ -177,7 +211,14 @@ export class Game {
           this.applyRosterHomes(net.players, net.playerId)
         }
         this.beginMatch(ground, [], 0, scores, true, null)
+        this.homeYard.setActiveFences([])
+        this.playerCtrl.clearDeath()
+        this.onDeath?.(null)
         this.onMatchClock?.(meta.endsAt, meta.winScore)
+      }),
+      net.on('unoMoment', (info) => {
+        if (!this.matchLive) return
+        this.onUnoMoment?.(info)
       }),
       net.on('matchEnd', (info) => {
         this.matchLive = false
@@ -185,9 +226,12 @@ export class Game {
         this.trapSystem?.clear()
         this.remotes.clearAllStacks()
         this.homeYard.clearAllPiles()
+        this.homeYard.setActiveFences([])
         this.cardSystem.enterOnlineMode()
         this.playerCtrl.player.setHeldStack([])
         this.playerCtrl.player.setHeldItem(null)
+        this.playerCtrl.clearDeath()
+        this.onDeath?.(null)
         this.onItem?.(null)
         this.onMatchClock?.(null, info.winScore)
         this.onScores?.(info.scores)
@@ -369,6 +413,46 @@ export class Game {
         if (playerId === net.playerId) return
         this.remotes.setPlayerItem(playerId, item)
       }),
+      net.on('homeFences', (active) => {
+        if (!this.matchLive) return
+        this.homeYard.setActiveFences(active)
+      }),
+      net.on('playerDied', (info) => {
+        if (!this.matchLive) return
+        if (info.playerId === net.playerId) {
+          this.playerCtrl.setDeathUntil(info.until)
+          this.playerCtrl.player.setHeldStack([])
+          this.playerCtrl.player.setHeldItem(null)
+          this.onItem?.(null)
+          this.onDeath?.({ until: info.until, durationMs: info.durationMs })
+          this.onPickupFeedback({
+            type: 'toast',
+            text: '触电！5 秒后在自家重生',
+            kind: 'bad',
+          })
+        } else {
+          this.onPickupFeedback({
+            type: 'toast',
+            text: '有人被老家电网电死了',
+            kind: 'ok',
+          })
+        }
+      }),
+      net.on('playerRespawned', (info) => {
+        if (!this.matchLive) return
+        if (info.playerId === net.playerId) {
+          this.playerCtrl.clearDeath()
+          this.playerCtrl.teleport(info.x, info.y, info.z, 0)
+          this.cameraFollow.snapTo(this.playerCtrl.getPosition())
+          this.onDeath?.(null)
+          this.onPickupFeedback({
+            type: 'toast',
+            text: '已在自家重生',
+            kind: 'ok',
+          })
+        }
+        // Remotes snap via next world_state poses
+      }),
       net.on('status', (status) => {
         if (status === 'disconnected' || status === 'error') {
           this.matchLive = false
@@ -410,6 +494,8 @@ export class Game {
   private spawnTrainingDummy(): void {
     this.removeTrainingDummy()
     this.trainingDummy = new TrainingDummy()
+    // Hidden by default; left-side debug button can show it
+    this.trainingDummy.root.visible = false
     this.scene.add(this.trainingDummy.root)
     if (this.pendingDummyStack) {
       this.trainingDummy.setStack(this.pendingDummyStack)
@@ -422,6 +508,21 @@ export class Game {
     this.scene.remove(this.trainingDummy.root)
     this.trainingDummy.dispose()
     this.trainingDummy = null
+  }
+
+  /** Toggle training dummy mesh (server target still exists when match live). */
+  setDummyVisible(visible: boolean): boolean {
+    if (!this.trainingDummy) {
+      if (this.matchLive) this.spawnTrainingDummy()
+      else return false
+    }
+    if (!this.trainingDummy) return false
+    this.trainingDummy.root.visible = visible
+    return true
+  }
+
+  isDummyVisible(): boolean {
+    return !!this.trainingDummy?.root.visible
   }
 
   private applyLocalInventory(
@@ -649,6 +750,14 @@ export class Game {
     this.trapSystem?.update(dt)
     this.trainingDummy?.update(dt)
     this.slideCorridor?.update(dt)
+    this.homeYard?.update(dt)
+
+    // Offline: fence on when standing on own home platform
+    if (!this.net?.isPlaying && this.homeYard) {
+      const hi = this.cardSystem?.getHomeIndex?.() ?? homeConfig.defaultSlot
+      const onHome = isInsideHomeSlot(hi, pos.x, pos.z)
+      this.homeYard.setActiveFences(onHome ? [hi] : [])
+    }
 
     if (this.net?.isPlaying) {
       this.net.tickPose(dt, {
@@ -657,7 +766,11 @@ export class Game {
         z: pos.z,
         yaw: this.playerCtrl.getYaw(),
       })
-      if (this.input.consumeAttack() && !this.playerCtrl.isStunned()) {
+      if (
+        this.input.consumeAttack() &&
+        !this.playerCtrl.isStunned() &&
+        !this.playerCtrl.isDead()
+      ) {
         const held = this.playerCtrl.player.getHeldItem()
         const yaw = this.playerCtrl.getYaw()
         if (held) {
@@ -671,7 +784,11 @@ export class Game {
           this.net.slide(yaw)
         }
       }
-      if (this.input.consumeDiscardItem() && !this.playerCtrl.isStunned()) {
+      if (
+        this.input.consumeDiscardItem() &&
+        !this.playerCtrl.isStunned() &&
+        !this.playerCtrl.isDead()
+      ) {
         const held = this.playerCtrl.player.getHeldItem()
         if (!held) {
           this.onPickupFeedback({
