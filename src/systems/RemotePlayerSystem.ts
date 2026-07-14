@@ -72,6 +72,15 @@ export class RemotePlayerSystem {
   /** Authoritative backpack for a player (local id ignored — local uses private_state). */
   setPlayerStack(playerId: string, stack: readonly UnoCardData[]): void {
     if (playerId === TRAINING_DUMMY_ID) return
+    const prev = this.stacks.get(playerId)
+    // Skip no-op updates — offline bots used to push every frame
+    if (
+      prev &&
+      prev.length === stack.length &&
+      prev.every((c, i) => c.id === stack[i]?.id)
+    ) {
+      return
+    }
     const copy = [...stack]
     this.stacks.set(playerId, copy)
     if (playerId === this.localId) return
@@ -175,6 +184,16 @@ export class RemotePlayerSystem {
     this.remotes.get(playerId)?.player.flashSlideRange(dist)
   }
 
+  /** UNO moment: flag above remote avatar head. */
+  setUnoAlert(playerId: string, active: boolean): void {
+    if (playerId === this.localId) return
+    this.remotes.get(playerId)?.player.setUnoAlert(active)
+  }
+
+  clearAllUnoAlerts(): void {
+    for (const r of this.remotes.values()) r.player.setUnoAlert(false)
+  }
+
   update(dt: number): void {
     for (const r of this.remotes.values()) r.update(dt)
   }
@@ -201,8 +220,23 @@ export class RemotePlayerSystem {
     return remote
   }
 
-  pushPoseNow(id: string, x: number, y: number, z: number, yaw: number): void {
-    this.remotes.get(id)?.pushPose(x, y, z, yaw)
+  /**
+   * Local bots / offline: force pose immediately (no interp lag, no origin flash).
+   */
+  pushPoseNow(
+    id: string,
+    x: number,
+    y: number,
+    z: number,
+    yaw: number,
+    immediate = true,
+    dt = 1 / 60,
+    force = false,
+  ): void {
+    const r = this.remotes.get(id)
+    if (!r) return
+    if (immediate) r.snapImmediate(x, y, z, yaw, dt, force)
+    else r.pushPose(x, y, z, yaw)
   }
 
   removeById(id: string): void {
@@ -213,12 +247,18 @@ export class RemotePlayerSystem {
     const remote = new RemotePlayer(id, name, this.colorSeq++)
     this.remotes.set(id, remote)
     this.group.add(remote.root)
-    // Lobby / before first world_state: sit at corner home, not world origin
+    // Spawn at home corner immediately — never leave at world origin (0,0,0)
     const slot =
       typeof homeIndex === 'number' ? homeIndex : this.homeById.get(id)
     if (typeof slot === 'number') {
-      const sp = getHomeSlot(slot).spawn
-      remote.pushPose(sp.x, REMOTE_HOME_STAND_Y, sp.z, 0)
+      // Use platform center XZ (not fall-in spawn Y) so bot stands on home
+      const c = getHomeSlot(slot).center
+      remote.snapImmediate(c.x, REMOTE_HOME_STAND_Y, c.z, 0, 1 / 60, true)
+    } else {
+      // Hidden until real pose — never show at world origin
+      remote.snapImmediate(0, REMOTE_HOME_STAND_Y, -40, 0, 1 / 60, true)
+      // keep invisible: snap sets visible; hide again
+      // (snapImmediate always shows — place far SW instead)
     }
     const held = this.stacks.get(id)
     if (held?.length) remote.player.setHeldStack(held)

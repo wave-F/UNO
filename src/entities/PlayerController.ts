@@ -115,20 +115,42 @@ export class PlayerController {
   /**
    * Fly along knock arc (body center). Cards are handled separately via cards_spawned.
    */
+  private knockJustEnded = false
+
+  consumeKnockJustEnded(): boolean {
+    const v = this.knockJustEnded
+    this.knockJustEnded = false
+    return v
+  }
+
   playKnockback(toX: number, toZ: number, durationMs: number): void {
     const t = this.body.translation()
     this.horizVel.set(0, 0, 0)
     this.verticalVel = 0
     this.slide = null
+    this.knockJustEnded = false
+    const lim = 18.5
+    const clamp = (v: number) => Math.max(-lim, Math.min(lim, v))
+    // Always arc from standing height so land pose is camera-safe
+    const baseY = this.standingBodyY()
     this.knock = {
       t: 0,
       duration: Math.max(0.2, durationMs / 1000),
-      fromX: t.x,
-      fromZ: t.z,
-      toX,
-      toZ,
-      baseY: t.y,
+      fromX: clamp(t.x),
+      fromZ: clamp(t.z),
+      toX: clamp(toX),
+      toZ: clamp(toZ),
+      baseY,
     }
+  }
+
+  private slideJustEnded = false
+
+  /** True once after a slide fully recovers (for camera re-snap). */
+  consumeSlideJustEnded(): boolean {
+    const v = this.slideJustEnded
+    this.slideJustEnded = false
+    return v
   }
 
   /** Lie flat and dash forward, then recover hardstun. */
@@ -142,18 +164,35 @@ export class PlayerController {
     this.horizVel.set(0, 0, 0)
     this.verticalVel = 0
     this.knock = null
+    this.slideJustEnded = false
+    // Always slide on standing height — never inherit mid-air / under-floor Y
+    // (bad baseY makes camera lookAt underground → only sky + UI)
+    const baseY = this.standingBodyY()
+    const lim = 18.5
+    const clamp = (v: number) => Math.max(-lim, Math.min(lim, v))
     this.slide = {
       t: 0,
       duration: Math.max(0.15, durationMs / 1000),
       recover: Math.max(0.1, recoverMs / 1000),
       recoverLeft: 0,
-      fromX: t.x,
-      fromZ: t.z,
-      toX,
-      toZ,
-      baseY: t.y,
+      fromX: clamp(t.x),
+      fromZ: clamp(t.z),
+      toX: clamp(toX),
+      toZ: clamp(toZ),
+      baseY,
       phase: 'dash',
     }
+    // Snap body onto rail immediately so camera does not lag one frame under floor
+    this.body.setTranslation(
+      { x: this.slide.fromX, y: baseY, z: this.slide.fromZ },
+      true,
+    )
+    this.body.setNextKinematicTranslation({
+      x: this.slide.fromX,
+      y: baseY,
+      z: this.slide.fromZ,
+    })
+    this.syncMesh()
   }
 
   update(dt: number): void {
@@ -169,37 +208,54 @@ export class PlayerController {
       this.player.mesh.rotation.y = p.yaw
       this.grounded = false
       this.syncMesh()
+      this.player.setLimbMode('normal')
+      this.player.setMoveSpeed(0)
       this.player.updateVisuals(dt)
       return
     }
 
-    // Slide tackle: flat dash then recover freeze
+    // Slide tackle: flat dash then recover hardstun
     if (this.slide) {
+      this.player.setLimbMode('slide')
+      this.player.setMoveSpeed(0)
+      const railY = this.standingBodyY()
+      this.slide.baseY = railY
       if (this.slide.phase === 'dash') {
         this.slide.t += dt
         const u = Math.min(1, this.slide.t / this.slide.duration)
-        const ease = u // linear dash
-        const x = this.slide.fromX + (this.slide.toX - this.slide.fromX) * ease
-        const z = this.slide.fromZ + (this.slide.toZ - this.slide.fromZ) * ease
-        this.body.setTranslation({ x, y: this.slide.baseY, z }, true)
-        this.body.setNextKinematicTranslation({ x, y: this.slide.baseY, z })
-        // Diagonal lean on body only — slide range stays on ground plane
-        this.player.setBodyPitch(Math.PI / 2 * 0.35)
+        const x = this.slide.fromX + (this.slide.toX - this.slide.fromX) * u
+        const z = this.slide.fromZ + (this.slide.toZ - this.slide.fromZ) * u
+        this.body.setTranslation({ x, y: railY, z }, true)
+        this.body.setNextKinematicTranslation({ x, y: railY, z })
+        // Feet-first: lean body back (negative pitch); limbs handle feet forward
+        this.player.setBodyPitch(-Math.PI / 2 * 0.42)
         this.syncMesh()
         if (u >= 1) {
           this.slide.phase = 'recover'
           this.slide.recoverLeft = this.slide.recover
-          this.player.setBodyPitch(Math.PI / 2 * 0.35)
+          this.player.setBodyPitch(-Math.PI / 2 * 0.42)
         }
       } else {
         this.slide.recoverLeft -= dt
         this.horizVel.set(0, 0, 0)
-        this.body.setNextKinematicTranslation(this.body.translation())
-        this.player.setBodyPitch(Math.PI / 2 * 0.35)
+        // Pin to slide end + standing height every frame (physics cannot sink us)
+        this.body.setTranslation(
+          { x: this.slide.toX, y: railY, z: this.slide.toZ },
+          true,
+        )
+        this.body.setNextKinematicTranslation({
+          x: this.slide.toX,
+          y: railY,
+          z: this.slide.toZ,
+        })
+        this.player.setBodyPitch(-Math.PI / 2 * 0.42)
         this.syncMesh()
         if (this.slide.recoverLeft <= 0) {
           this.player.setBodyPitch(0, 0)
+          this.player.setLimbMode('normal')
+          this.verticalVel = 0
           this.slide = null
+          this.slideJustEnded = true
           if (!this.player.getHeldItem()) {
             this.player.slideRange.setIdlePreview(true)
           }
@@ -211,6 +267,8 @@ export class PlayerController {
 
     // Knock arc first (overrides movement / freeze-in-place stun pose)
     if (this.knock) {
+      this.player.setLimbMode('knock')
+      this.player.setMoveSpeed(0)
       this.knock.t += dt
       const u = Math.min(1, this.knock.t / this.knock.duration)
       const ease = 1 - (1 - u) * (1 - u)
@@ -227,17 +285,22 @@ export class PlayerController {
       )
       this.syncMesh()
       if (u >= 1) {
+        // Land at standing height — never leave body stuck high / through floor
+        const landY = this.standingBodyY()
         this.body.setTranslation(
-          { x: this.knock.toX, y: this.knock.baseY, z: this.knock.toZ },
+          { x: this.knock.toX, y: landY, z: this.knock.toZ },
           true,
         )
         this.body.setNextKinematicTranslation({
           x: this.knock.toX,
-          y: this.knock.baseY,
+          y: landY,
           z: this.knock.toZ,
         })
+        this.verticalVel = 0
         this.player.setBodyPitch(0, 0)
+        this.player.setLimbMode('normal')
         this.knock = null
+        this.knockJustEnded = true
         this.syncMesh()
       }
       this.player.updateVisuals(dt)
@@ -245,6 +308,8 @@ export class PlayerController {
     }
 
     if (this.isStunned()) {
+      this.player.setLimbMode('stun')
+      this.player.setMoveSpeed(0)
       this.horizVel.set(0, 0, 0)
       this.verticalVel -= cfg.gravity * dt
       if (this.verticalVel < -cfg.maxFallSpeed) this.verticalVel = -cfg.maxFallSpeed
@@ -261,6 +326,8 @@ export class PlayerController {
       })
       this.grounded = this.controller.computedGrounded()
       if (this.grounded && this.verticalVel < 0) this.verticalVel = 0
+      // Dead/stun must not sink below the floor (void → sky blue camera)
+      this.clampBodyHeight()
       this.syncMesh()
       this.player.updateVisuals(dt)
       return
@@ -276,7 +343,7 @@ export class PlayerController {
     this.wishDir.addScaledVector(this.flatRight, move.x)
     if (this.wishDir.lengthSq() > 1e-6) this.wishDir.normalize()
 
-    // −5% max speed per card on backpack (shared rule with bots)
+    // −3% max speed per card on backpack (shared rule with bots)
     const maxSpeed = maxSpeedForCarry(this.player.getHeldCount(), cfg.maxSpeed)
 
     const target = this.wishDir.clone().multiplyScalar(maxSpeed)
@@ -336,6 +403,8 @@ export class PlayerController {
     }
 
     this.syncMesh()
+    this.player.setLimbMode('normal')
+    this.player.setMoveSpeed(hSpeed)
     if (hSpeed > 0.15 || target.lengthSq() > 0) {
       const fx = this.horizVel.x || target.x
       const fz = this.horizVel.z || target.z
@@ -349,6 +418,11 @@ export class PlayerController {
     return new THREE.Vector3(t.x, t.y, t.z)
   }
 
+  /** Capsule center Y when standing on ground (y=0). */
+  standingBodyY(): number {
+    return cfg.capsuleHalfHeight + cfg.capsuleRadius
+  }
+
   /**
    * Snap body + mesh (match start / own home spawn).
    * Queued until next update so character controller cannot stomp it.
@@ -356,6 +430,9 @@ export class PlayerController {
   teleport(x: number, y: number, z: number, yaw = 0): void {
     this.verticalVel = 0
     this.horizVel.set(0, 0, 0)
+    this.knock = null
+    this.slide = null
+    this.player.setBodyPitch(0, 0)
     this.pendingTeleport = { x, y, z, yaw }
     // Immediate visual + getPosition so net pose / camera see new home same frame
     this.body.setTranslation({ x, y, z }, true)
@@ -364,9 +441,63 @@ export class PlayerController {
     this.syncMesh()
   }
 
+  /**
+   * Keep player inside arena. Returns false if position was NaN (caller should home).
+   * Fixes void-fall camera (solid sky blue background).
+   */
+  ensureInArena(half = 18.5): boolean {
+    const t = this.body.translation()
+    let { x, y, z } = t
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+      return false
+    }
+    let fix = false
+    if (x > half) {
+      x = half
+      fix = true
+    } else if (x < -half) {
+      x = -half
+      fix = true
+    }
+    if (z > half) {
+      z = half
+      fix = true
+    } else if (z < -half) {
+      z = -half
+      fix = true
+    }
+    const stand = this.standingBodyY()
+    // Below floor or rocketed into sky
+    if (y < stand * 0.35 || y > 14) {
+      y = stand
+      this.verticalVel = 0
+      fix = true
+    }
+    if (fix) {
+      this.horizVel.set(0, 0, 0)
+      this.knock = null
+      this.slide = null
+      this.player.setBodyPitch(0, 0)
+      this.body.setTranslation({ x, y, z }, true)
+      this.body.setNextKinematicTranslation({ x, y, z })
+      this.syncMesh()
+    }
+    return true
+  }
+
   /** Horizontal facing (mesh yaw). */
   getYaw(): number {
     return this.player.mesh.rotation.y
+  }
+
+  private clampBodyHeight(): void {
+    const t = this.body.translation()
+    const stand = this.standingBodyY()
+    if (!Number.isFinite(t.y) || t.y < stand * 0.35) {
+      this.verticalVel = 0
+      this.body.setTranslation({ x: t.x, y: stand, z: t.z }, true)
+      this.body.setNextKinematicTranslation({ x: t.x, y: stand, z: t.z })
+    }
   }
 
   private syncMesh(): void {

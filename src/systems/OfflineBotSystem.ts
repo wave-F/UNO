@@ -9,8 +9,8 @@ import {
   SLIDE_DURATION_MS,
   SLIDE_HIT_RADIUS,
   SLIDE_RECOVER_MS,
-  STUN_DROP_MAX,
   STUN_DURATION_MS,
+  randomSlideDropCount,
   type UnoCardData,
 } from '../../shared/uno/types'
 import { movementConfig as cfg } from '../config/movement'
@@ -32,6 +32,17 @@ export type OfflinePlayerSnap = {
   stunned: boolean
   onOwnHome: boolean
   homeIndex: number
+  /** Backpack card count — used when choosing slide targets. */
+  stackCount: number
+}
+
+/** Who a bot is sliding toward (player or another bot). */
+type SlideTarget = {
+  kind: 'player' | 'bot'
+  id?: string
+  x: number
+  z: number
+  stackCount: number
 }
 
 type OfflineBot = {
@@ -100,24 +111,27 @@ export class OfflineBotSystem {
     this.active = true
 
     const n = Math.max(0, Math.min(3, count))
+    // Names by corner so mid-field runners are not confused with "stuck at center"
+    const cornerNames = ['东南', '西北', '东北'] as const
     for (let i = 0; i < n; i++) {
       const homeIndex = i + 1
-      const sp = getHomeSlot(homeIndex).spawn
+      // Stand on platform center (stable XZ); spawn.y is fall-in height for humans
+      const home = getHomeSlot(homeIndex).center
       const id = `offline_bot_${i + 1}`
-      const name = `Bot${i + 1}`
+      const name = cornerNames[i] ?? `Bot${i + 1}`
       const bot: OfflineBot = {
         id,
         name,
         homeIndex,
-        x: sp.x,
-        z: sp.z,
+        x: home.x,
+        z: home.z,
         yaw: 0,
         stack: [],
         score: 0,
         mode: 'seek',
-        targetX: sp.x,
-        targetZ: sp.z,
-        retargetT: 0,
+        targetX: home.x,
+        targetZ: home.z,
+        retargetT: 0.9 + Math.random() * 0.4, // brief idle at home so spawn is visible
         stunUntil: 0,
         deathUntil: 0,
         stolenFromHomes: new Set(),
@@ -126,7 +140,8 @@ export class OfflineBotSystem {
       }
       this.bots.push(bot)
       remotes.upsert(id, name, homeIndex)
-      remotes.pushPoseNow(id, bot.x, STAND_Y, bot.z, bot.yaw)
+      // force=true: pin to corner even if anim leftover
+      remotes.pushPoseNow(id, bot.x, STAND_Y, bot.z, bot.yaw, true, 1 / 60, true)
       remotes.setPlayerStack(id, [])
     }
   }
@@ -248,18 +263,29 @@ export class OfflineBotSystem {
     for (const bot of this.bots) {
       // Respawn after fence death
       if (bot.deathUntil > 0 && now >= bot.deathUntil) {
-        const sp = getHomeSlot(bot.homeIndex).spawn
-        bot.x = sp.x
-        bot.z = sp.z
+        const home = getHomeSlot(bot.homeIndex).center
+        bot.x = home.x
+        bot.z = home.z
         bot.deathUntil = 0
         bot.stunUntil = 0
         bot.stack = []
         bot.stolenFromHomes.clear()
         this.remotes.setPlayerStack(bot.id, [])
+        this.remotes.pushPoseNow(
+          bot.id,
+          bot.x,
+          STAND_Y,
+          bot.z,
+          bot.yaw,
+          true,
+          dt,
+          true,
+        )
       }
 
       this.tickOne(bot, dt, player, now)
-      this.remotes.pushPoseNow(bot.id, bot.x, STAND_Y, bot.z, bot.yaw)
+      // Pass dt so RemotePlayer can drive limb walk from position delta
+      this.remotes.pushPoseNow(bot.id, bot.x, STAND_Y, bot.z, bot.yaw, true, dt)
       this.remotes.setPlayerStack(bot.id, bot.stack)
     }
   }
@@ -281,18 +307,16 @@ export class OfflineBotSystem {
       this.chooseTarget(bot, player)
     }
 
-    // Occasional slide at player
-    if (
-      bot.slideCd <= 0 &&
-      bot.stack.length < MAX_CARRY &&
-      !player.dead &&
-      !player.stunned
-    ) {
-      const dPlayer = Math.hypot(player.x - bot.x, player.z - bot.z)
-      if (dPlayer < BOT_SLIDE_ENGAGE && dPlayer > 0.35 && Math.random() < 0.4) {
-        this.botTrySlide(bot, player)
-        bot.slideCd = BOT_SLIDE_CD + Math.random() * 2.5
-        return
+    // Occasional slide at any nearby carrier (player or other bot)
+    if (bot.slideCd <= 0 && bot.stack.length < MAX_CARRY) {
+      const target = this.pickSlideTarget(bot, player, now)
+      if (target) {
+        const d = Math.hypot(target.x - bot.x, target.z - bot.z)
+        if (d < BOT_SLIDE_ENGAGE && d > 0.35 && Math.random() < 0.4) {
+          this.botTrySlide(bot, target, now)
+          bot.slideCd = BOT_SLIDE_CD + Math.random() * 2.5
+          return
+        }
       }
     }
 
@@ -343,8 +367,52 @@ export class OfflineBotSystem {
     }
   }
 
-  private botTrySlide(bot: OfflineBot, player: OfflinePlayerSnap): void {
-    const yaw = Math.atan2(player.x - bot.x, player.z - bot.z)
+  /** Closest worthwhile slide target: carriers only (player or bots). */
+  private pickSlideTarget(
+    bot: OfflineBot,
+    player: OfflinePlayerSnap,
+    now: number,
+  ): SlideTarget | null {
+    let best: SlideTarget | null = null
+    let bestScore = Infinity
+
+    const consider = (t: SlideTarget) => {
+      if (t.stackCount <= 0) return
+      const d = Math.hypot(t.x - bot.x, t.z - bot.z)
+      if (d < 0.35 || d > BOT_SLIDE_ENGAGE + 0.5) return
+      // Prefer closer + slightly prefer fatter backpacks
+      const score = d - Math.min(2, t.stackCount) * 0.35
+      if (score < bestScore) {
+        bestScore = score
+        best = t
+      }
+    }
+
+    if (!player.dead && !player.stunned && player.stackCount > 0) {
+      consider({
+        kind: 'player',
+        x: player.x,
+        z: player.z,
+        stackCount: player.stackCount,
+      })
+    }
+    for (const other of this.bots) {
+      if (other.id === bot.id) continue
+      if (now < other.deathUntil || now < other.stunUntil) continue
+      if (other.stack.length <= 0) continue
+      consider({
+        kind: 'bot',
+        id: other.id,
+        x: other.x,
+        z: other.z,
+        stackCount: other.stack.length,
+      })
+    }
+    return best
+  }
+
+  private botTrySlide(bot: OfflineBot, target: SlideTarget, now: number): void {
+    const yaw = Math.atan2(target.x - bot.x, target.z - bot.z)
     const fx = Math.sin(yaw)
     const fz = Math.cos(yaw)
     const dist = SLIDE_BASE_DIST * 0.85
@@ -354,10 +422,10 @@ export class OfflineBotSystem {
     const toX = Math.max(-lim, Math.min(lim, bot.x + fx * dist))
     const toZ = Math.max(-lim, Math.min(lim, bot.z + fz * dist))
 
-    // Move bot along slide path instantly (logic); visual via remote slide if available
+    // Hit-test current target along slide corridor
     const hit = pointNearSegment(
-      player.x,
-      player.z,
+      target.x,
+      target.z,
       fromX,
       fromZ,
       toX,
@@ -377,31 +445,40 @@ export class OfflineBotSystem {
       durationMs: SLIDE_DURATION_MS,
       recoverMs: SLIDE_RECOVER_MS,
     })
-    bot.stunUntil = Date.now() + SLIDE_DURATION_MS + SLIDE_RECOVER_MS
+    bot.stunUntil = now + SLIDE_DURATION_MS + SLIDE_RECOVER_MS
 
-    if (hit && this.onHitPlayer) {
-      const kx = player.x - fromX
-      const kz = player.z - fromZ
-      const len = Math.hypot(kx, kz) || 1
-      const dirX = kx / len
-      const dirZ = kz / len
+    if (!hit) return
+
+    const kx = target.x - fromX
+    const kz = target.z - fromZ
+    const len = Math.hypot(kx, kz) || 1
+    const dirX = kx / len
+    const dirZ = kz / len
+
+    if (target.kind === 'player' && this.onHitPlayer) {
       const pToX = Math.max(
         -lim,
-        Math.min(lim, player.x + dirX * KNOCKBACK_DIST),
+        Math.min(lim, target.x + dirX * KNOCKBACK_DIST),
       )
       const pToZ = Math.max(
         -lim,
-        Math.min(lim, player.z + dirZ * KNOCKBACK_DIST),
+        Math.min(lim, target.z + dirZ * KNOCKBACK_DIST),
       )
       this.onHitPlayer({
-        fromX: player.x,
-        fromZ: player.z,
+        fromX: target.x,
+        fromZ: target.z,
         toX: pToX,
         toZ: pToZ,
         dirX,
         dirZ,
         durationMs: KNOCKBACK_DURATION_MS,
       })
+      return
+    }
+
+    if (target.kind === 'bot' && target.id) {
+      const victim = this.bots.find((b) => b.id === target.id)
+      if (victim) this.knockBot(victim, dirX, dirZ, fromX, fromZ, now)
     }
   }
 
@@ -452,25 +529,28 @@ export class OfflineBotSystem {
       }
     }
 
-    // Hunt player to set up slide
-    if (
-      bot.slideCd <= 1.5 &&
-      !player.dead &&
-      Math.random() < 0.28
-    ) {
-      bot.mode = 'hunt'
-      bot.targetX = player.x
-      bot.targetZ = player.z
-      return
+    // Hunt a nearby carrier (player or another bot) to set up a slide
+    if (bot.slideCd <= 1.5 && Math.random() < 0.28) {
+      const hunt = this.pickHuntTarget(bot, player, Date.now())
+      if (hunt) {
+        bot.mode = 'hunt'
+        bot.targetX = hunt.x
+        bot.targetZ = hunt.z
+        return
+      }
     }
 
     const ground = cards.listGround()
     const top = bot.stack.length ? bot.stack[bot.stack.length - 1]! : null
-    let best: { x: number; z: number; d: number } | null = null
+    const homeC = getHomeSlot(bot.homeIndex).center
+    // Prefer cards closer to own home so bots fan out (not all pile into map center)
+    let best: { x: number; z: number; score: number } | null = null
     for (const g of ground) {
       if (top && !canStackOn(top, g.card)) continue
-      const d = Math.hypot(g.x - bot.x, g.z - bot.z)
-      if (!best || d < best.d) best = { x: g.x, z: g.z, d }
+      const dSelf = Math.hypot(g.x - bot.x, g.z - bot.z)
+      const dHome = Math.hypot(g.x - homeC.x, g.z - homeC.z)
+      const score = dSelf + dHome * 0.55
+      if (!best || score < best.score) best = { x: g.x, z: g.z, score }
     }
     if (best) {
       bot.mode = 'seek'
@@ -496,10 +576,36 @@ export class OfflineBotSystem {
       return
     }
 
+    // Wander near own home — never park at world origin
     bot.mode = 'wander'
-    bot.targetX = (Math.random() * 2 - 1) * 10
-    bot.targetZ = (Math.random() * 2 - 1) * 10
+    bot.targetX = homeC.x + (Math.random() * 8 - 4)
+    bot.targetZ = homeC.z + (Math.random() * 8 - 4)
     void homes
+  }
+
+  /** Approach target for slide — farther range than engage, any carrier. */
+  private pickHuntTarget(
+    bot: OfflineBot,
+    player: OfflinePlayerSnap,
+    now: number,
+  ): { x: number; z: number } | null {
+    let best: { x: number; z: number; score: number } | null = null
+    const consider = (x: number, z: number, stackCount: number) => {
+      if (stackCount <= 0) return
+      const d = Math.hypot(x - bot.x, z - bot.z)
+      if (d < 0.5 || d > 10) return
+      const score = d - Math.min(3, stackCount) * 0.4
+      if (!best || score < best.score) best = { x, z, score }
+    }
+    if (!player.dead && !player.stunned) {
+      consider(player.x, player.z, player.stackCount)
+    }
+    for (const other of this.bots) {
+      if (other.id === bot.id) continue
+      if (now < other.deathUntil || now < other.stunUntil) continue
+      consider(other.x, other.z, other.stack.length)
+    }
+    return best
   }
 
   private findRaid(bot: OfflineBot): { x: number; z: number } | null {
@@ -548,7 +654,8 @@ export class OfflineBotSystem {
     const toX = Math.max(-lim, Math.min(lim, bot.x + kx * KNOCKBACK_DIST))
     const toZ = Math.max(-lim, Math.min(lim, bot.z + kz * KNOCKBACK_DIST))
 
-    const dropN = Math.min(STUN_DROP_MAX, bot.stack.length)
+    // Slide hit: random 1–4 (same as server trySlide)
+    const dropN = randomSlideDropCount(bot.stack.length)
     const dropped: { card: UnoCardData; x: number; y: number; z: number }[] = []
     let removed = 0
     for (let guard = 0; guard < 32 && removed < dropN && bot.stack.length; guard++) {

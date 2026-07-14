@@ -16,7 +16,11 @@ const game = new Game(app, (fb) => hud.handleFeedback(fb))
 
 const lobby = new LobbyPanel(net, {
   onSoloPlay: (playerName) => {
+    // Enter field first (paused), show how-to, then start clock/AI
     game.startOfflineSolo(playerName, 3)
+    hud.showHowToPlay(() => {
+      game.beginOfflineMatch()
+    })
   },
   onMatchStart: () => {
     // Future LAN match start
@@ -40,11 +44,29 @@ game
       if (endsAt != null) hud.setDummyButtonState(false)
     })
     game.setMatchEndListener((info) => {
+      try {
+        document.exitPointerLock()
+      } catch {
+        /* ignore */
+      }
       const offlineLocal = info.scores.some((s) => s.id === 'local_player')
-      hud.showMatchEnd(info, offlineLocal ? 'local_player' : net.playerId)
       hud.setDummyButtonState(false)
-      lobby.show()
-      lobby.flashMatchEnd(info.message)
+      if (offlineLocal) {
+        // Solo: show settlement first; reset field + lobby only after dismiss
+        // (avoid mid-reset “blue sky” + unclickable UI under pointer lock)
+        hud.showMatchEnd(info, 'local_player', {
+          solo: true,
+          onDismiss: () => {
+            game.cleanupAfterOfflineMatch()
+            lobby.show()
+            lobby.flashMatchEnd(info.message)
+          },
+        })
+      } else {
+        hud.showMatchEnd(info, net.playerId)
+        lobby.show()
+        lobby.flashMatchEnd(info.message)
+      }
     })
     game.setUnoMomentListener((info) => {
       hud.showUnoMoment(info.message)

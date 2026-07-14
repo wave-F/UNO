@@ -4,9 +4,9 @@ export const cardSpawnConfig = {
   initialCount: 10,
   maxOnField: 18,
   /** Seconds between spawn waves. */
-  spawnIntervalSec: 4,
+  spawnIntervalSec: 2,
   /** Cards per wave. */
-  spawnPerWave: 2,
+  spawnPerWave: 3,
 } as const
 
 /** Horizontal pickup radius (meters, XZ). */

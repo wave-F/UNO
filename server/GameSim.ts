@@ -40,6 +40,7 @@ import {
   SLIDE_RECOVER_MS,
   STUN_DROP_MAX,
   STUN_DURATION_MS,
+  randomSlideDropCount,
   type UnoCardData,
 } from '../shared/uno/types.ts'
 
@@ -779,7 +780,10 @@ export class GameSim {
     })
 
     if (bestId) {
-      this.applyVictimHit(attackerId, bestId, fx, fz, poses, now)
+      // Slide: random 1–4 cards (capped by backpack)
+      this.applyVictimHit(attackerId, bestId, fx, fz, poses, now, {
+        dropCount: randomSlideDropCount(this.players.get(bestId)?.stack.length ?? 0),
+      })
     }
   }
 
@@ -791,6 +795,7 @@ export class GameSim {
     dirZ: number,
     poses: Map<string, { x: number; y: number; z: number }>,
     now: number,
+    opts?: { dropCount?: number },
   ): void {
     const vic = this.players.get(victimId)
     const vp = poses.get(victimId)
@@ -820,7 +825,11 @@ export class GameSim {
     }
     poses.set(victimId, { x: toX, y: vp.y, z: toZ })
 
-    const dropN = Math.min(STUN_DROP_MAX, vic.stack.length)
+    // Mace default: up to STUN_DROP_MAX; slide passes random 1–4 via opts.dropCount
+    const dropN =
+      opts?.dropCount != null
+        ? Math.min(opts.dropCount, vic.stack.length)
+        : Math.min(STUN_DROP_MAX, vic.stack.length)
     const dropped: GroundCard[] = []
     let removed = 0
     for (let guard = 0; guard < 32 && removed < dropN && vic.stack.length; guard++) {

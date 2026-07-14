@@ -20,6 +20,7 @@ export class GameHud {
   private readonly timerEl: HTMLDivElement
   private readonly goalEl: HTMLDivElement
   private readonly resultEl: HTMLDivElement
+  private readonly howtoEl: HTMLDivElement
 
   private readonly skillRoot: HTMLDivElement
   private readonly skillCdMask: HTMLDivElement
@@ -79,6 +80,11 @@ export class GameHud {
     this.resultEl.id = 'match-result'
     this.resultEl.hidden = true
     document.body.appendChild(this.resultEl)
+
+    this.howtoEl = document.createElement('div')
+    this.howtoEl.id = 'howto-panel'
+    this.howtoEl.hidden = true
+    document.body.appendChild(this.howtoEl)
 
     // Right-side debug strip (pointer-events so buttons work under pointer lock)
     const debug = document.createElement('div')
@@ -205,8 +211,13 @@ export class GameHud {
     if (!this.deathEl || !this.deathCdEl) return
     const left = this.deathUntil - Date.now()
     if (left <= 0) {
-      // Wait for server respawn event to hide (or hide if slightly overdue)
       this.deathCdEl.textContent = '0.0'
+      // Online: wait briefly for player_respawned. Offline: hide so we never stick on 0.0
+      // (respawn path also calls hideDeath; this is a safety net)
+      if (this.deathUntil > 0 && Date.now() - this.deathUntil > 400) {
+        this.hideDeath()
+        return
+      }
       this.deathRaf = requestAnimationFrame(this.tickDeath)
       return
     }
@@ -228,6 +239,44 @@ export class GameHud {
     this.dummyBtn.classList.toggle('active', visible)
   }
 
+  /**
+   * Full-screen how-to before solo match starts.
+   * Unlocks pointer so the confirm button is clickable.
+   */
+  showHowToPlay(onDismiss?: () => void): void {
+    try {
+      document.exitPointerLock()
+    } catch {
+      /* ignore */
+    }
+    this.howtoEl.hidden = false
+    this.howtoEl.innerHTML = `
+      <div class="howto-card" role="dialog" aria-labelledby="howto-title">
+        <h2 id="howto-title">玩法说明</h2>
+        <ul class="howto-list">
+          <li><strong>目标</strong>：先把牌送回自家 <strong>${MATCH_WIN_SCORE} 张</strong>即胜。</li>
+          <li><strong>移动</strong>：鼠标控制朝向，<strong>WASD</strong> 移动，<strong>左键</strong>铲人。</li>
+          <li><strong>拾取</strong>：按照 UNO 规则拾取数字牌。</li>
+        </ul>
+        <button type="button" class="match-result-btn" id="howto-ok">知道了，开始游戏</button>
+      </div>
+    `
+    const dismiss = (): void => {
+      this.hideHowToPlay()
+      onDismiss?.()
+    }
+    this.howtoEl.querySelector('#howto-ok')?.addEventListener('click', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      dismiss()
+    })
+  }
+
+  hideHowToPlay(): void {
+    this.howtoEl.hidden = true
+    this.howtoEl.innerHTML = ''
+  }
+
   /** Start local slide cooldown UI (default 5s). */
   startSlideCooldown(durationMs = SLIDE_COOLDOWN_MS): void {
     this.slideCdUntil = performance.now() + durationMs
@@ -241,6 +290,7 @@ export class GameHud {
     this.skillRoot.classList.remove('on-cd')
     this.skillCdMask.style.setProperty('--cd', '0')
     this.skillCdText.hidden = true
+    this.skillCdText.textContent = ''
     if (this.skillRaf) {
       cancelAnimationFrame(this.skillRaf)
       this.skillRaf = 0
@@ -249,8 +299,8 @@ export class GameHud {
 
   private tickSkillCd = (): void => {
     const left = this.slideCdUntil - performance.now()
-    // Hide "0.0" — clear as soon as under 0.05s remaining
-    if (left <= 50) {
+    // Clear when remaining would round to 0.0s (toFixed(1) of 0.05 → "0.1")
+    if (left <= 0 || left < 100) {
       this.clearSlideCooldown()
       return
     }
@@ -279,54 +329,96 @@ export class GameHud {
     this.goalEl.textContent = `目标：先送达 ${winScore} 张 · 时间到比谁多`
     this.timerEl.hidden = false
     if (this.timerRaf) cancelAnimationFrame(this.timerRaf)
+    // Drive timer from a single rAF chain; tick also re-validates finite endsAt
     this.tickTimer()
   }
 
-  showMatchEnd(info: {
-    reason: 'score' | 'timeout'
-    winners: { id: string; name?: string; score: number }[]
-    message: string
-    winScore: number
-  }, localId: string | null): void {
+  /** Remaining match ms, or null if no clock. */
+  getMatchRemainingMs(): number | null {
+    if (this.matchEndsAt == null || !Number.isFinite(this.matchEndsAt)) return null
+    return Math.max(0, this.matchEndsAt - Date.now())
+  }
+
+  showMatchEnd(
+    info: {
+      reason: 'score' | 'timeout'
+      winners: { id: string; name?: string; score: number }[]
+      message: string
+      winScore: number
+    },
+    localId: string | null,
+    opts?: { solo?: boolean; onDismiss?: () => void },
+  ): void {
+    this.hideHowToPlay()
     this.hideUnoMoment()
     this.clearSlideCooldown()
+    this.hideDeath()
     this.setMatchClock(null, info.winScore)
+    try {
+      document.exitPointerLock()
+    } catch {
+      /* ignore */
+    }
     const youWin = info.winners.some((w) => w.id === localId)
     this.resultEl.hidden = false
     this.resultEl.className = youWin ? 'match-result win' : 'match-result'
     const title =
       info.reason === 'score' ? '🏁 率先达标！' : '⏱️ 时间到！'
+    const hint = opts?.solo
+      ? '点击下方返回大厅，可再开一局单机'
+      : '返回大厅，房主可再开一局'
     this.resultEl.innerHTML = `
       <div class="match-result-card">
         <h2>${title}</h2>
         <p class="match-result-msg">${escapeHtml(info.message)}</p>
-        <p class="match-result-hint">返回大厅，房主可再开一局</p>
+        <p class="match-result-hint">${hint}</p>
         <button type="button" class="match-result-btn" id="match-result-ok">知道了</button>
       </div>
     `
-    this.resultEl.querySelector('#match-result-ok')?.addEventListener('click', () => {
+    const dismiss = (): void => {
       this.hideMatchEnd()
+      opts?.onDismiss?.()
+    }
+    this.resultEl.querySelector('#match-result-ok')?.addEventListener('click', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      dismiss()
     })
+    // Also allow click on dimmed backdrop to close
+    this.resultEl.onclick = (e) => {
+      if (e.target === this.resultEl) dismiss()
+    }
     this.showPrompt(info.message, youWin ? 'ok' : 'bad')
   }
 
   hideMatchEnd(): void {
     this.resultEl.hidden = true
     this.resultEl.innerHTML = ''
+    this.resultEl.onclick = null
   }
 
   private tickTimer = (): void => {
-    if (this.matchEndsAt == null) return
+    if (this.matchEndsAt == null || !Number.isFinite(this.matchEndsAt)) {
+      this.timerEl.hidden = true
+      return
+    }
     const left = Math.max(0, this.matchEndsAt - Date.now())
+    // Guard absurd clock (system time jump) — hide rather than show garbage
+    if (left > 3 * 60 * 60 * 1000) {
+      this.timerEl.textContent = '剩余 --:--'
+      this.timerRaf = requestAnimationFrame(this.tickTimer)
+      return
+    }
     const sec = Math.ceil(left / 1000)
     const m = Math.floor(sec / 60)
     const s = sec % 60
     this.timerEl.textContent = `剩余 ${m}:${s.toString().padStart(2, '0')}`
-    this.timerEl.classList.toggle('urgent', left < 30_000)
+    this.timerEl.classList.toggle('urgent', left < 30_000 && left > 0)
     if (left > 0) {
       this.timerRaf = requestAnimationFrame(this.tickTimer)
     } else {
       this.timerEl.textContent = '剩余 0:00'
+      this.timerEl.classList.add('urgent')
     }
   }
 
@@ -443,9 +535,9 @@ export class GameHud {
     this.promptEl.textContent = text
     this.promptEl.className = `hud-prompt ${kind}`
     if (this.promptTimer !== null) window.clearTimeout(this.promptTimer)
-    if (kind === 'ok') {
-      this.promptTimer = window.setTimeout(() => this.hidePrompt(), 1600)
-    }
+    // Both kinds auto-dismiss (bad used to stick forever, e.g. stun tips)
+    const ms = kind === 'ok' ? 1600 : 2200
+    this.promptTimer = window.setTimeout(() => this.hidePrompt(), ms)
   }
 
   private hidePrompt(): void {

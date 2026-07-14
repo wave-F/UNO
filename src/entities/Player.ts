@@ -17,9 +17,12 @@ export type PlayerVisualOptions = {
   name?: string
 }
 
+/** Procedural limb pose mode (visual only). */
+export type LimbMode = 'normal' | 'slide' | 'knock' | 'stun'
+
 /**
- * Visual bean: capsule body + face + backpack cards.
- * Hand item (眩晕狼牙棒) held at right-hand pivot — mace mesh only, no arm.
+ * Visual bean: capsule body + stubby arms/legs + face + backpack cards.
+ * Hand item (眩晕狼牙棒) held at right-hand pivot on the right arm.
  */
 export class Player {
   readonly mesh: THREE.Group
@@ -30,7 +33,7 @@ export class Player {
   private heldCount = 0
   private heldItem: UnoCardData | null = null
 
-  /** Right-hand pivot (shoulder/hand height). */
+  /** Right-hand pivot (on right arm / hand). */
   private readonly handPivot: THREE.Group
   private weaponRoot: THREE.Group | null = null
   private weaponFaceTex: THREE.CanvasTexture | null = null
@@ -48,6 +51,23 @@ export class Player {
   readonly slideRange: SlideRangeVisual
   private readonly stunFx: StunFx
 
+  /** Floating UNO! above head (match moment; on mesh so it stays upright). */
+  private unoAlert = false
+  private readonly unoSprite: THREE.Sprite
+  private readonly unoTex: THREE.CanvasTexture
+  private unoPulse = 0
+  private readonly unoBaseY: number
+
+  // --- Stubby Fall-Guys limbs (visual only) ---
+  private readonly armL: THREE.Group
+  private readonly armR: THREE.Group
+  private readonly legL: THREE.Group
+  private readonly legR: THREE.Group
+  private limbPhase = 0
+  private moveSpeed = 0
+  private limbMode: LimbMode = 'normal'
+  private readonly bodyColor: number
+
   constructor(opts: PlayerVisualOptions = {}) {
     this.mesh = new THREE.Group()
     this.mesh.name = opts.name ? `Player:${opts.name}` : 'Player'
@@ -59,10 +79,11 @@ export class Player {
 
     const { capsuleRadius: r, capsuleHalfHeight: h } = movementConfig
     this.totalHeight = h * 2 + r * 2
+    this.bodyColor = opts.color ?? 0xff8fab
 
     const bodyGeo = new THREE.CapsuleGeometry(r, h * 2, 8, 16)
     const bodyMat = new THREE.MeshStandardMaterial({
-      color: opts.color ?? 0xff8fab,
+      color: this.bodyColor,
       roughness: 0.4,
       metalness: 0.05,
     })
@@ -89,13 +110,97 @@ export class Player {
     this.headCard = new HeadCardDisplay()
     this.bodyRoot.add(this.headCard.root)
 
-    // Right hand / hip grip — no arm mesh, just weapon
+    // Stubby arms + legs (Fall Guys style proportions)
+    const limbMat = new THREE.MeshStandardMaterial({
+      color: this.bodyColor,
+      roughness: 0.45,
+      metalness: 0.05,
+    })
+    const handMat = new THREE.MeshStandardMaterial({
+      color: 0xffe4ec,
+      roughness: 0.55,
+      metalness: 0.0,
+    })
+    const footMat = new THREE.MeshStandardMaterial({
+      color: 0x3b3b52,
+      roughness: 0.7,
+      metalness: 0.05,
+    })
+
+    // Stubby arms stick OUT from body (Z sign: L negative / R positive = outward)
+    // Length ~1/3 of previous 0.52×height so hands stay short Fall-Guys nubs
+    const armLen = this.totalHeight * 0.173
+    const armRad = r * 0.2
+    const legLen = this.totalHeight * 0.28
+    const legRad = r * 0.24
+    const shoulderY = this.totalHeight * 0.56
+    // Slightly outside capsule surface so mesh does not spawn inside body
+    const shoulderX = r * 1.08
+
+    this.armL = this.makeLimb({
+      name: 'ArmL',
+      length: armLen,
+      radius: armRad,
+      limbMat,
+      tipMat: handMat,
+      tipScale: 1.35,
+      tipIsFoot: false,
+    })
+    this.armL.position.set(-shoulderX, shoulderY, 0.02)
+    // Rest: ~70° out to the side + slight down (hands clear of belly)
+    this.armL.rotation.z = -1.15
+    this.armL.rotation.x = 0.2
+    this.bodyRoot.add(this.armL)
+
+    this.armR = this.makeLimb({
+      name: 'ArmR',
+      length: armLen,
+      radius: armRad,
+      limbMat,
+      tipMat: handMat,
+      tipScale: 1.35,
+      tipIsFoot: false,
+    })
+    this.armR.position.set(shoulderX, shoulderY, 0.02)
+    this.armR.rotation.z = 1.15
+    this.armR.rotation.x = 0.2
+    this.bodyRoot.add(this.armR)
+
+    const hipY = this.totalHeight * 0.18
+    const hipX = r * 0.32
+    this.legL = this.makeLimb({
+      name: 'LegL',
+      length: legLen,
+      radius: legRad,
+      limbMat,
+      tipMat: footMat,
+      tipScale: 1.45,
+      tipIsFoot: true,
+    })
+    this.legL.position.set(-hipX, hipY, 0.02)
+    this.legL.rotation.x = 0.08
+    this.bodyRoot.add(this.legL)
+
+    this.legR = this.makeLimb({
+      name: 'LegR',
+      length: legLen,
+      radius: legRad,
+      limbMat,
+      tipMat: footMat,
+      tipScale: 1.45,
+      tipIsFoot: true,
+    })
+    this.legR.position.set(hipX, hipY, 0.02)
+    this.legR.rotation.x = 0.08
+    this.bodyRoot.add(this.legR)
+
+    // Weapon pivot sits on right hand tip
     this.handPivot = new THREE.Group()
     this.handPivot.name = 'HandPivot'
-    this.handPivot.position.set(r * 0.95, this.totalHeight * 0.48, 0.12)
+    this.handPivot.position.set(0, -armLen * 0.95, 0)
     this.handPivot.rotation.x = this.handRestX
     this.handPivot.rotation.z = this.handRestZ
-    this.bodyRoot.add(this.handPivot)
+    this.armR.add(this.handPivot)
     this.handPivot.visible = false
 
     // Hit indicators stay on mesh (yaw only) so slide lean does not warp them
@@ -107,6 +212,93 @@ export class Player {
 
     this.stunFx = new StunFx(this.totalHeight)
     this.bodyRoot.add(this.stunFx.root)
+
+    // Head UNO banner (above stun / name; does not pitch with body lean)
+    const unoCanvas = document.createElement('canvas')
+    unoCanvas.width = 320
+    unoCanvas.height = 112
+    const unoCtx = unoCanvas.getContext('2d')!
+    paintHeadUno(unoCtx, unoCanvas.width, unoCanvas.height)
+    this.unoTex = new THREE.CanvasTexture(unoCanvas)
+    this.unoTex.colorSpace = THREE.SRGBColorSpace
+    this.unoSprite = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: this.unoTex,
+        transparent: true,
+        depthWrite: false,
+      }),
+    )
+    this.unoBaseY = this.totalHeight + 0.85
+    this.unoSprite.scale.set(2.4, 0.85, 1)
+    this.unoSprite.position.set(0, this.unoBaseY, 0)
+    this.unoSprite.visible = false
+    this.mesh.add(this.unoSprite)
+  }
+
+  /** Show / hide UNO moment flag above this avatar's head. */
+  setUnoAlert(active: boolean): void {
+    this.unoAlert = active
+    this.unoSprite.visible = active
+    if (!active) {
+      this.unoPulse = 0
+      this.unoSprite.position.y = this.unoBaseY
+      this.unoSprite.scale.set(2.4, 0.85, 1)
+    }
+  }
+
+  isUnoAlert(): boolean {
+    return this.unoAlert
+  }
+
+  /**
+   * Short stub: capsule hangs along -Y from pivot + tip sphere (hand/foot).
+   */
+  private makeLimb(opts: {
+    name: string
+    length: number
+    radius: number
+    limbMat: THREE.Material
+    tipMat: THREE.Material
+    tipScale: number
+    tipIsFoot: boolean
+  }): THREE.Group {
+    const g = new THREE.Group()
+    g.name = opts.name
+    // Cylinder part length; hemispheres add 2*radius to total visual length
+    const cyl = Math.max(0.04, opts.length - opts.radius * 2)
+    const limb = new THREE.Mesh(
+      new THREE.CapsuleGeometry(opts.radius, cyl, 4, 8),
+      opts.limbMat,
+    )
+    limb.castShadow = true
+    limb.position.y = -opts.length * 0.5
+    g.add(limb)
+
+    const tipR = opts.radius * opts.tipScale
+    const tip = new THREE.Mesh(
+      opts.tipIsFoot
+        ? new THREE.SphereGeometry(tipR, 8, 6)
+        : new THREE.SphereGeometry(tipR, 8, 8),
+      opts.tipMat,
+    )
+    tip.castShadow = true
+    tip.position.y = -opts.length
+    if (opts.tipIsFoot) {
+      tip.scale.set(1.15, 0.65, 1.35)
+      tip.position.z = tipR * 0.25
+    }
+    g.add(tip)
+    return g
+  }
+
+  /** Horizontal move speed (m/s) for walk/run limb swing. */
+  setMoveSpeed(speed: number): void {
+    this.moveSpeed = Math.max(0, speed)
+  }
+
+  /** Visual limb pose mode (slide / knock / stun / normal). */
+  setLimbMode(mode: LimbMode): void {
+    this.limbMode = mode
   }
 
   /** Slide lean / knock tumble — body only, ground FX stay level. */
@@ -122,6 +314,11 @@ export class Player {
 
   playStun(durationMs: number): void {
     this.stunFx.play(durationMs)
+  }
+
+  /** Whether stun FX is currently active (for remote limb pose). */
+  isStunFxActive(): boolean {
+    return this.stunFx.isActive()
   }
 
   setHeldStack(stack: readonly UnoCardData[]): void {
@@ -177,6 +374,14 @@ export class Player {
     this.stunFx.update(dt)
     this.attackRange.update(dt)
     this.slideRange.update(dt)
+    if (this.unoAlert) {
+      this.unoPulse += dt * 4.5
+      const bob = Math.sin(this.unoPulse) * 0.08
+      const sc = 1 + 0.08 * Math.sin(this.unoPulse * 1.8)
+      this.unoSprite.position.y = this.unoBaseY + bob
+      this.unoSprite.scale.set(2.4 * sc, 0.85 * sc, 1)
+    }
+    this.updateLimbs(dt)
     if (this.swingT >= 0) {
       this.swingT += dt
       const u = Math.min(1, this.swingT / this.swingDuration)
@@ -199,6 +404,70 @@ export class Player {
         }
       }
     }
+  }
+
+  private updateLimbs(dt: number): void {
+    // L: z < 0, R: z > 0 → arms point outward (not into belly)
+    const restArmZL = -1.15
+    const restArmZR = 1.15
+    const restArmX = 0.2
+    const restLegX = 0.08
+
+    if (this.limbMode === 'slide') {
+      // Feet-first slide: legs kick forward, arms trail back & stay wide
+      this.armL.rotation.set(-1.05, 0, -1.05)
+      this.armR.rotation.set(-1.05, 0, 1.05)
+      this.legL.rotation.set(1.15, 0, 0.1)
+      this.legR.rotation.set(1.15, 0, -0.1)
+      return
+    }
+
+    if (this.limbMode === 'knock') {
+      // Floppy mid-air: soft sin tumble on limbs
+      this.limbPhase += dt * 10
+      const w = Math.sin(this.limbPhase)
+      this.armL.rotation.set(0.5 + w * 0.5, 0, -1.0 - w * 0.15)
+      this.armR.rotation.set(0.5 - w * 0.5, 0, 1.0 + w * 0.15)
+      this.legL.rotation.set(0.4 + w * 0.6, 0, 0.25)
+      this.legR.rotation.set(0.4 - w * 0.6, 0, -0.25)
+      return
+    }
+
+    if (this.limbMode === 'stun') {
+      this.limbPhase += dt * 6
+      const w = Math.sin(this.limbPhase) * 0.12
+      this.armL.rotation.set(0.35 + w, 0, restArmZL - 0.1)
+      this.armR.rotation.set(0.35 - w, 0, restArmZR + 0.1)
+      this.legL.rotation.set(restLegX, 0, 0.08)
+      this.legR.rotation.set(restLegX, 0, -0.08)
+      return
+    }
+
+    // normal: idle or run cycle driven by moveSpeed
+    const maxSp = movementConfig.maxSpeed
+    const runAmt = THREE.MathUtils.clamp(this.moveSpeed / Math.max(maxSp, 0.01), 0, 1)
+    if (runAmt < 0.08) {
+      // Idle: tiny bob — keep arms wide out
+      this.limbPhase += dt * 2.2
+      const bob = Math.sin(this.limbPhase) * 0.05
+      this.armL.rotation.set(restArmX + bob, 0, restArmZL)
+      this.armR.rotation.set(restArmX - bob, 0, restArmZR)
+      this.legL.rotation.set(restLegX, 0, 0.05)
+      this.legR.rotation.set(restLegX, 0, -0.05)
+      return
+    }
+
+    // Run: swing forward/back on X, keep strong outward Z so hands stay visible
+    const cadence = 8 + runAmt * 6
+    this.limbPhase += dt * cadence
+    const swing = Math.sin(this.limbPhase) * (0.5 * runAmt + 0.1)
+    const armSwing = swing * 0.75
+    const legSwing = swing * 0.95
+
+    this.armL.rotation.set(restArmX + armSwing, 0, restArmZL)
+    this.armR.rotation.set(restArmX - armSwing, 0, restArmZR)
+    this.legL.rotation.set(restLegX - legSwing, 0, 0.06)
+    this.legR.rotation.set(restLegX + legSwing, 0, -0.06)
   }
 
   /** Face horizontal move direction (world XZ). */
@@ -262,4 +531,28 @@ export class Player {
     }
     this.weaponRoot = null
   }
+}
+
+function paintHeadUno(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+): void {
+  ctx.clearRect(0, 0, w, h)
+  const g = ctx.createLinearGradient(0, 0, w, h)
+  g.addColorStop(0, '#fbbf24')
+  g.addColorStop(0.55, '#f97316')
+  g.addColorStop(1, '#ef4444')
+  ctx.fillStyle = g
+  ctx.beginPath()
+  ctx.roundRect(10, 14, w - 20, h - 28, 18)
+  ctx.fill()
+  ctx.strokeStyle = 'rgba(255,255,255,0.9)'
+  ctx.lineWidth = 5
+  ctx.stroke()
+  ctx.fillStyle = '#1a0a00'
+  ctx.font = 'bold 58px system-ui, sans-serif'
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText('UNO!', w / 2, h / 2 + 2)
 }

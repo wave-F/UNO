@@ -131,12 +131,23 @@ export class CardPickupSystem {
     this.deliveredTotal = Math.max(0, n)
   }
 
-  /** Drop entire backpack (death / slide hit); returns cards. */
+  /** Drop entire backpack (fence death); returns cards. */
   takeAllStack(): UnoCardData[] {
     const cards = [...this.stack]
     this.stack = []
     this.stolenFromHomes.clear()
     return cards
+  }
+
+  /**
+   * Drop up to `max` cards from stack top (mace / slide — same as server STUN_DROP_MAX).
+   * Does not clear stolenFromHomes (trip continues).
+   */
+  takeTopFromStack(max: number): UnoCardData[] {
+    if (max <= 0 || !this.stack.length) return []
+    const n = Math.min(max, this.stack.length)
+    const taken = this.stack.splice(this.stack.length - n, n)
+    return taken
   }
 
   isOnline(): boolean {
@@ -496,7 +507,10 @@ export class CardPickupSystem {
       this.tmp.set(x, 0.55, z)
       return this.tmp.clone()
     }
-    return new THREE.Vector3(0, 0.55, 0)
+    // Fallback: ring away from exact origin so bots do not all path to (0,0)
+    const ang = Math.random() * Math.PI * 2
+    const rad = 6 + Math.random() * 4
+    return new THREE.Vector3(Math.cos(ang) * rad, 0.55, Math.sin(ang) * rad)
   }
 
   dispose(): void {

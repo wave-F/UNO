@@ -18,14 +18,15 @@ export const UNO_COLOR_HEX: Record<UnoColor, number> = {
   red: 0xe63946,
   yellow: 0xffd60a,
   green: 0x2a9d8f,
-  blue: 0x457b9d,
+  /** Vivid UNO-style blue (was muted slate #457b9d). */
+  blue: 0x1a6dff,
 }
 
 export const UNO_COLOR_CSS: Record<UnoColor, string> = {
   red: '#e63946',
   yellow: '#ffd60a',
   green: '#2a9d8f',
-  blue: '#457b9d',
+  blue: '#1a6dff',
 }
 
 /** Face / UI color for colorless function cards. */
@@ -74,8 +75,22 @@ export const STUN_DURATION_MS = 2000
 export const SKIP_TRAP_STUN_MS = 2000
 /** Step-on radius for placed skip traps (XZ meters). */
 export const SKIP_TRAP_RADIUS = 0.85
-/** On hit: drop exactly min(STUN_DROP_MAX, backpack length) cards from stack top. */
+/** Mace hit: drop min(STUN_DROP_MAX, backpack length) from stack top. */
 export const STUN_DROP_MAX = 4
+/** Slide tackle: drop a random count in [SLIDE_DROP_MIN, SLIDE_DROP_MAX], capped by stack. */
+export const SLIDE_DROP_MIN = 1
+export const SLIDE_DROP_MAX = 4
+
+/** Random 1–4 (or less if backpack smaller). */
+export function randomSlideDropCount(
+  stackLen: number,
+  rng: () => number = Math.random,
+): number {
+  if (stackLen <= 0) return 0
+  const span = SLIDE_DROP_MAX - SLIDE_DROP_MIN + 1
+  const want = SLIDE_DROP_MIN + Math.floor(rng() * span)
+  return Math.min(want, stackLen)
+}
 /** Melee reach (world units). */
 export const ATTACK_RANGE = 1.6
 /** Half-angle of forward cone (degrees). */

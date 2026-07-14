@@ -62,6 +62,11 @@ export class StunFx {
     this.play(durationMs, untilServerMs)
   }
 
+  /** True while stun stars are showing (local clock). */
+  isActive(now = performance.now()): boolean {
+    return now < this.untilLocal
+  }
+
   update(dt: number): void {
     const now = performance.now()
     if (now >= this.untilLocal) {

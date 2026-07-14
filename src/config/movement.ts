@@ -2,7 +2,7 @@ import { BASE_MAX_SPEED } from '../../shared/config/movement'
 
 /** Tunable Fall-Guys-ish movement parameters (Phase 1). */
 export const movementConfig = {
-  /** Max horizontal speed (m/s). Reduced 5% per carried card (see shared/config/movement). */
+  /** Max horizontal speed (m/s). Reduced 3% per carried card (see shared/config/movement). */
   maxSpeed: BASE_MAX_SPEED,
   /** Ground acceleration toward target velocity. */
   accel: 28,
@@ -31,8 +31,12 @@ export const movementConfig = {
   /** Extra height added to spherical Y. */
   cameraHeightBias: 0.4,
   /** Default pitch (radians), higher = more top-down. */
-  cameraPitchDefault: 0.42,
-  cameraPitchMin: 0.12,
+  cameraPitchDefault: 0.48,
+  /**
+   * Min pitch — must stay high enough to always see ground.
+   * 0.12 was nearly horizontal → mostly sky + fog = “blue screen”.
+   */
+  cameraPitchMin: 0.32,
   cameraPitchMax: 1.15,
   /** Mouse look sensitivity (radians per pixel). */
   mouseSensitivity: 0.0022,

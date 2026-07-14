@@ -59,6 +59,11 @@ export class HomeBase {
   private fenceActive = false
   private readonly fenceGroup = new THREE.Group()
   private fencePulse = 0
+  /** UNO moment: big label above this home until match ends. */
+  private unoAlert = false
+  private readonly unoSprite: THREE.Sprite
+  private readonly unoTex: THREE.CanvasTexture
+  private unoPulse = 0
 
   constructor(opts: HomeBaseOptions = {}) {
     this.slotIndex = opts.slotIndex ?? homeConfig.defaultSlot
@@ -158,6 +163,26 @@ export class HomeBase {
     this.labelSprite.position.set(0, 3.4, 0)
     this.group.add(this.labelSprite)
 
+    // World UNO banner above home (shown when within last N of win)
+    const unoCanvas = document.createElement('canvas')
+    unoCanvas.width = 384
+    unoCanvas.height = 128
+    const unoCtx = unoCanvas.getContext('2d')!
+    this.paintUnoCanvas(unoCtx, unoCanvas.width, unoCanvas.height)
+    this.unoTex = new THREE.CanvasTexture(unoCanvas)
+    this.unoTex.colorSpace = THREE.SRGBColorSpace
+    this.unoSprite = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: this.unoTex,
+        transparent: true,
+        depthWrite: false,
+      }),
+    )
+    this.unoSprite.scale.set(5.2, 1.75, 1)
+    this.unoSprite.position.set(0, 5.1, 0)
+    this.unoSprite.visible = false
+    this.group.add(this.unoSprite)
+
     this.refreshBubble()
 
     this.pileRoot.position.set(0, 0.3, 0)
@@ -166,6 +191,41 @@ export class HomeBase {
     this.buildFenceVisual(halfSize)
     this.fenceGroup.visible = false
     this.group.add(this.fenceGroup)
+  }
+
+  private paintUnoCanvas(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+  ): void {
+    ctx.clearRect(0, 0, w, h)
+    const g = ctx.createLinearGradient(0, 0, w, h)
+    g.addColorStop(0, '#fbbf24')
+    g.addColorStop(0.5, '#f97316')
+    g.addColorStop(1, '#ef4444')
+    ctx.fillStyle = g
+    ctx.beginPath()
+    ctx.roundRect(12, 16, w - 24, h - 32, 22)
+    ctx.fill()
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)'
+    ctx.lineWidth = 6
+    ctx.stroke()
+    ctx.fillStyle = '#1a0a00'
+    ctx.font = 'bold 72px system-ui, sans-serif'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText('UNO!', w / 2, h / 2 + 2)
+  }
+
+  /** Show / hide floating UNO alert above this home. */
+  setUnoAlert(active: boolean): void {
+    this.unoAlert = active
+    this.unoSprite.visible = active
+    if (!active) this.unoPulse = 0
+  }
+
+  isUnoAlert(): boolean {
+    return this.unoAlert
   }
 
   /** Toggle electric fence around this home (all clients). */
@@ -179,6 +239,13 @@ export class HomeBase {
   }
 
   update(dt: number): void {
+    if (this.unoAlert) {
+      this.unoPulse += dt * 4.2
+      const bob = Math.sin(this.unoPulse) * 0.12
+      const sc = 1 + 0.06 * Math.sin(this.unoPulse * 1.7)
+      this.unoSprite.position.y = 5.1 + bob
+      this.unoSprite.scale.set(5.2 * sc, 1.75 * sc, 1)
+    }
     if (!this.fenceActive) return
     this.fencePulse += dt * 6
     const op = 0.45 + 0.35 * (0.5 + 0.5 * Math.sin(this.fencePulse))
@@ -353,6 +420,8 @@ export class HomeBase {
     this.clearPileMeshes()
     this.labelTex.dispose()
     ;(this.labelSprite.material as THREE.SpriteMaterial).dispose()
+    this.unoTex.dispose()
+    ;(this.unoSprite.material as THREE.SpriteMaterial).dispose()
     ;(this.mineRing.material as THREE.Material).dispose()
     this.fenceGroup.traverse((obj) => {
       const mesh = obj as THREE.Mesh
@@ -445,6 +514,15 @@ export class HomeYard {
 
   clearAllPiles(): void {
     for (const h of this.homes) h.clearPile()
+  }
+
+  /** Toggle UNO moment flag above a home corner. */
+  setUnoAlert(slotIndex: number, active: boolean): void {
+    this.get(slotIndex).setUnoAlert(active)
+  }
+
+  clearUnoAlerts(): void {
+    for (const h of this.homes) h.setUnoAlert(false)
   }
 
   /**

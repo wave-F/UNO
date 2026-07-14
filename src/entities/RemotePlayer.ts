@@ -43,6 +43,16 @@ export class RemotePlayer {
     baseY: number
     phase: 'dash' | 'recover'
   } | null = null
+  /** Last applied XZ for estimating limb run speed. */
+  private lastXZ: { x: number; z: number } | null = null
+  /** Last good world pose — never fall back to constructor origin (0,0,0). */
+  private lastKnown: { x: number; y: number; z: number; yaw: number } | null =
+    null
+  /**
+   * Offline bots: pose was just forced via snapImmediate this frame.
+   * Skip interp re-apply (which would zero moveSpeed on identical XZ).
+   */
+  private posePinned = false
 
   constructor(id: string, name: string, colorIndex = 0) {
     this.id = id
@@ -54,6 +64,8 @@ export class RemotePlayer {
     this.nameSprite = makeNameSprite(name)
     this.nameSprite.position.y = this.halfTotal * 2 + 0.35
     this.root.add(this.nameSprite)
+    // Hide far away until first real pose (avoids origin flash)
+    this.player.mesh.visible = false
   }
 
   pushPose(x: number, y: number, z: number, yaw: number): void {
@@ -63,6 +75,51 @@ export class RemotePlayer {
     this.snaps.push(snap)
     // Keep a short buffer
     while (this.snaps.length > 12) this.snaps.shift()
+    this.lastKnown = { x, y, z, yaw }
+    this.player.mesh.visible = true
+  }
+
+  /**
+   * Offline / local bots: place immediately (no network interp).
+   * Avoids sitting at world origin until the first interpolated sample.
+   * @param dt frame dt used to estimate run speed for limb swing
+   * @param force apply even during knock/slide (use for hard respawn)
+   */
+  snapImmediate(
+    x: number,
+    y: number,
+    z: number,
+    yaw: number,
+    dt = 1 / 60,
+    force = false,
+  ): void {
+    if (!force && (this.knock || this.slide)) return
+    if (force) {
+      this.knock = null
+      this.slide = null
+      this.player.setBodyPitch(0, 0)
+      this.player.setLimbMode('normal')
+    }
+    // Timestamp in the past so update() paints this sample right away
+    const t = performance.now() - this.interpDelayMs - 32
+    this.snaps = [{ recvAt: t, x, y, z, yaw }]
+    const step = Math.max(1e-4, dt)
+    // Speed from previous pin → keeps bot limb walk cycle alive
+    if (this.lastXZ && !force) {
+      const sp = Math.hypot(x - this.lastXZ.x, z - this.lastXZ.z) / step
+      this.player.setMoveSpeed(sp)
+    } else {
+      this.player.setMoveSpeed(0)
+    }
+    this.lastXZ = { x, z }
+    this.lastKnown = { x, y, z, yaw }
+    // Move root so nameplate + mesh stay together (mesh alone left name at origin)
+    this.root.position.set(x, y - this.halfTotal, z)
+    this.player.mesh.position.set(0, 0, 0)
+    this.player.mesh.rotation.y = yaw
+    this.player.mesh.visible = true
+    this.nameSprite.visible = true
+    this.posePinned = true
   }
 
   playKnockback(
@@ -111,19 +168,33 @@ export class RemotePlayer {
   }
 
   update(dt: number): void {
-    this.player.updateVisuals(dt)
+    // Offline bot path: pose + moveSpeed already set in snapImmediate
+    if (this.posePinned && !this.slide && !this.knock) {
+      this.posePinned = false
+      if (this.player.isStunFxActive()) {
+        this.player.setLimbMode('stun')
+        this.player.setMoveSpeed(0)
+      } else {
+        this.player.setLimbMode('normal')
+      }
+      this.player.updateVisuals(dt)
+      return
+    }
+    this.posePinned = false
 
     if (this.slide) {
+      this.player.setLimbMode('slide')
+      this.player.setMoveSpeed(0)
       if (this.slide.phase === 'dash') {
         this.slide.t += dt
         const u = Math.min(1, this.slide.t / this.slide.duration)
         const x = this.slide.fromX + (this.slide.toX - this.slide.fromX) * u
         const z = this.slide.fromZ + (this.slide.toZ - this.slide.fromZ) * u
-        this.apply(x, this.slide.baseY, z, this.player.mesh.rotation.y)
-        this.player.setBodyPitch(Math.PI / 2 * 0.35)
+        this.apply(x, this.slide.baseY, z, this.player.mesh.rotation.y, dt)
+        this.player.setBodyPitch(-Math.PI / 2 * 0.42)
         if (u >= 1) {
           this.slide.phase = 'recover'
-          this.player.setBodyPitch(Math.PI / 2 * 0.35)
+          this.player.setBodyPitch(-Math.PI / 2 * 0.42)
         }
       } else {
         this.slide.recoverLeft -= dt
@@ -132,10 +203,12 @@ export class RemotePlayer {
           this.slide.baseY,
           this.slide.toZ,
           this.player.mesh.rotation.y,
+          dt,
         )
-        this.player.setBodyPitch(Math.PI / 2 * 0.35)
+        this.player.setBodyPitch(-Math.PI / 2 * 0.42)
         if (this.slide.recoverLeft <= 0) {
           this.player.setBodyPitch(0, 0)
+          this.player.setLimbMode('normal')
           this.snaps = [
             {
               recvAt: performance.now(),
@@ -148,10 +221,13 @@ export class RemotePlayer {
           this.slide = null
         }
       }
+      this.player.updateVisuals(dt)
       return
     }
 
     if (this.knock) {
+      this.player.setLimbMode('knock')
+      this.player.setMoveSpeed(0)
       this.knock.t += dt
       const u = Math.min(1, this.knock.t / this.knock.duration)
       const ease = 1 - (1 - u) * (1 - u)
@@ -159,14 +235,21 @@ export class RemotePlayer {
       const z = this.knock.fromZ + (this.knock.toZ - this.knock.fromZ) * ease
       const arc = Math.sin(u * Math.PI) * 1.35
       const y = this.knock.baseY + arc
-      this.apply(x, y, z, this.player.mesh.rotation.y)
+      this.apply(x, y, z, this.player.mesh.rotation.y, dt)
       this.player.setBodyPitch(
         Math.sin(u * Math.PI) * 0.85,
         Math.sin(u * Math.PI * 2) * 0.45,
       )
       if (u >= 1) {
-        this.apply(this.knock.toX, this.knock.baseY, this.knock.toZ, this.player.mesh.rotation.y)
+        this.apply(
+          this.knock.toX,
+          this.knock.baseY,
+          this.knock.toZ,
+          this.player.mesh.rotation.y,
+          dt,
+        )
         this.player.setBodyPitch(0, 0)
+        this.player.setLimbMode('normal')
         this.snaps = [
           {
             recvAt: performance.now(),
@@ -178,10 +261,33 @@ export class RemotePlayer {
         ]
         this.knock = null
       }
+      this.player.updateVisuals(dt)
       return
     }
 
-    if (this.snaps.length === 0) return
+    if (this.player.isStunFxActive()) {
+      this.player.setLimbMode('stun')
+    } else {
+      this.player.setLimbMode('normal')
+    }
+
+    if (this.snaps.length === 0) {
+      // Never leave mesh at constructor origin (0,0,0)
+      this.player.setMoveSpeed(0)
+      if (this.lastKnown) {
+        this.player.mesh.position.set(
+          this.lastKnown.x,
+          this.lastKnown.y - this.halfTotal,
+          this.lastKnown.z,
+        )
+        this.player.mesh.rotation.y = this.lastKnown.yaw
+        this.player.mesh.visible = true
+      } else {
+        this.player.mesh.visible = false
+      }
+      this.player.updateVisuals(dt)
+      return
+    }
 
     const renderAt = performance.now() - this.interpDelayMs
 
@@ -190,7 +296,8 @@ export class RemotePlayer {
     let b = this.snaps[this.snaps.length - 1]!
 
     if (renderAt <= a.recvAt) {
-      this.apply(a.x, a.y, a.z, a.yaw)
+      this.apply(a.x, a.y, a.z, a.yaw, dt)
+      this.player.updateVisuals(dt)
       return
     }
     if (renderAt >= b.recvAt) {
@@ -205,10 +312,12 @@ export class RemotePlayer {
           p.y + (q.y - p.y) * t,
           p.z + (q.z - p.z) * t,
           lerpAngle(p.yaw, q.yaw, Math.min(1, t)),
+          dt,
         )
       } else {
-        this.apply(b.x, b.y, b.z, b.yaw)
+        this.apply(b.x, b.y, b.z, b.yaw, dt)
       }
+      this.player.updateVisuals(dt)
       return
     }
 
@@ -229,7 +338,9 @@ export class RemotePlayer {
       a.y + (b.y - a.y) * u,
       a.z + (b.z - a.z) * u,
       lerpAngle(a.yaw, b.yaw, u),
+      dt,
     )
+    this.player.updateVisuals(dt)
   }
 
   dispose(): void {
@@ -241,10 +352,22 @@ export class RemotePlayer {
     tex?.dispose()
   }
 
-  private apply(x: number, y: number, z: number, yaw: number): void {
-    // Body center → feet mesh (same as PlayerController.syncMesh)
-    this.player.mesh.position.set(x, y - this.halfTotal, z)
+  private apply(x: number, y: number, z: number, yaw: number, dt = 1 / 60): void {
+    // Body center → feet (root carries nameplate + mesh together)
+    if (this.lastXZ && dt > 1e-4) {
+      const dx = x - this.lastXZ.x
+      const dz = z - this.lastXZ.z
+      const speed = Math.hypot(dx, dz) / dt
+      this.player.setMoveSpeed(speed)
+    } else {
+      this.player.setMoveSpeed(0)
+    }
+    this.lastXZ = { x, z }
+    this.lastKnown = { x, y, z, yaw }
+    this.root.position.set(x, y - this.halfTotal, z)
+    this.player.mesh.position.set(0, 0, 0)
     this.player.mesh.rotation.y = yaw
+    this.player.mesh.visible = true
   }
 }
 

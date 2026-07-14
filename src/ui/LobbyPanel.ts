@@ -27,7 +27,7 @@ export class LobbyPanel {
       <div class="lobby-card lobby-card-lg lobby-card-simple">
         <div class="lobby-title">UNO Guys <span class="lobby-ver">v${PROTOCOL_VERSION}</span></div>
         <p class="lobby-hint">
-          运牌回家，先送到 20 张或 2 分钟内比谁多。单机含 3 个机器人陪玩。
+          运牌回家，先送到 50 张或 2 分钟内比谁多。单机含 3 个机器人陪玩。
         </p>
         <label class="lobby-label">昵称
           <input id="lobby-name" type="text" maxlength="16" autocomplete="nickname" placeholder="你的名字" />

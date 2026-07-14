@@ -36,6 +36,7 @@ import {
   SLIDE_HIT_RADIUS,
   SLIDE_RECOVER_MS,
   STUN_DURATION_MS,
+  randomSlideDropCount,
   type UnoCardData,
 } from '../game/uno/types'
 import type { OfflineBotHitPlayer } from '../systems/OfflineBotSystem'
@@ -75,7 +76,8 @@ export class Game {
     this.container = container
     this.onPickupFeedback = onPickupFeedback
     this.scene.background = new THREE.Color(0x87ceeb)
-    this.scene.fog = new THREE.Fog(0x87ceeb, 35, 70)
+    // No distance fog: even mild fog made far field look like solid sky while HUD stayed up.
+    this.scene.fog = null
   }
 
   setPointerLockListener(cb: (locked: boolean) => void): void {
@@ -179,21 +181,28 @@ export class Game {
   private offlineUnoAnnounced = new Set<string>()
   private offlineLastSlideAt = 0
   private offlineWasDead = false
+  /** Skip fence checks for a few frames after offline respawn (teleport settle). */
+  private offlineFenceGraceUntil = 0
 
   /**
-   * Single-player: local UNO field + 3 AI bots, 2 min / 20 cards rules.
-   * No network required (works on static HTTPS hosting).
+   * Single-player setup: local field + bots standing at homes.
+   * Match timer / AI do not run until {@link beginOfflineMatch}.
    */
   startOfflineSolo(playerName = '你', botCount = 3): void {
     if (this.net?.isPlaying) return
+    // Always full reset (also clears frozen post-match state)
     this.endOfflineSolo()
     this.offlineSolo = true
     this.offlineEnding = false
     this.offlineUnoAnnounced.clear()
     this.offlineLastSlideAt = 0
     this.offlineWasDead = false
+    this.offlineFenceGraceUntil = 0
+    this.offlineScoresKey = ''
     this.offlineLocalName = (playerName || '你').trim().slice(0, 16) || '你'
-    this.matchLive = true
+    // Paused until how-to panel dismisses
+    this.matchLive = false
+    this.offlineEndsAt = 0
 
     this.trapSystem?.clear()
     this.applyDummyActive(false)
@@ -203,11 +212,14 @@ export class Game {
     this.cardSystem.enterOfflineMode()
     this.cardSystem.setHomeIndex(homeConfig.defaultSlot)
     this.cardSystem.setOfflineHomeYard(this.homeYard)
+    // Block pick/deposit until match actually starts
+    this.cardSystem.setInteractBlocked(true)
     this.playerCtrl.player.setHeldStack([])
     this.playerCtrl.player.setHeldItem(null)
     this.playerCtrl.clearDeath()
     this.onDeath?.(null)
     this.onItem?.(null)
+    this.onMatchClock?.(null, MATCH_WIN_SCORE)
 
     const owners = new Map<string, { homeIndex: number; name: string }>()
     owners.set(this.offlineLocalId, {
@@ -215,12 +227,16 @@ export class Game {
       name: this.offlineLocalName,
     })
     // Bots will use homes 1–3
+    const cornerNames = ['东南', '西北', '东北'] as const
     for (let i = 0; i < Math.min(3, botCount); i++) {
       owners.set(`offline_bot_${i + 1}`, {
         homeIndex: i + 1,
-        name: `Bot${i + 1}`,
+        name: cornerNames[i] ?? `Bot${i + 1}`,
       })
     }
+    this.homeByPlayer.clear()
+    for (const [id, o] of owners) this.homeByPlayer.set(id, o.homeIndex)
+    this.clearAllUnoAlerts()
     this.homeYard.applyOwnership({
       localHomeIndex: homeConfig.defaultSlot,
       owners,
@@ -242,12 +258,22 @@ export class Game {
         })
       },
     })
+    this.pushOfflineScores()
+  }
+
+  /**
+   * After how-to panel: start 2 min clock, enable AI / pickups / slide.
+   */
+  beginOfflineMatch(): void {
+    if (!this.offlineSolo || this.offlineEnding || this.matchLive) return
+    this.matchLive = true
+    this.cardSystem.setInteractBlocked(false)
     this.offlineEndsAt = Date.now() + MATCH_DURATION_MS
     this.onMatchClock?.(this.offlineEndsAt, MATCH_WIN_SCORE)
     this.pushOfflineScores()
     this.onPickupFeedback({
       type: 'toast',
-      text: `单机开始 · 你 vs ${Math.min(3, botCount)} 机器人 · 可偷家 / 电网 / 铲球`,
+      text: `开始！你 vs 机器人 · 先送达 ${MATCH_WIN_SCORE} 张或 2 分钟比谁多`,
       kind: 'ok',
     })
   }
@@ -255,6 +281,8 @@ export class Game {
   isOfflineSolo(): boolean {
     return this.offlineSolo
   }
+
+  private offlineScoresKey = ''
 
   private pushOfflineScores(): void {
     if (!this.offlineSolo) return
@@ -264,6 +292,10 @@ export class Game {
       this.cardSystem.getDeliveredTotal(),
       this.cardSystem.getStack().length,
     )
+    // Avoid rewriting HUD DOM every frame (was ~60×/s for entire match)
+    const key = scores.map((s) => `${s.id}:${s.score}:${s.stackCount}`).join(';')
+    if (key === this.offlineScoresKey) return
+    this.offlineScoresKey = key
     this.onScores?.(scores)
   }
 
@@ -273,14 +305,44 @@ export class Game {
     const remaining = MATCH_WIN_SCORE - score
     if (remaining <= 0 || remaining > MATCH_UNO_REMAINING) return
     this.offlineUnoAnnounced.add(playerId)
-    this.onUnoMoment?.({
+    this.fireUnoMoment({
       playerId,
       playerName: name,
       score,
       remaining,
       winScore: MATCH_WIN_SCORE,
-      message: `${name}玩家还差${remaining}张牌！UNO时刻！`,
+      message: `${name}玩家还差${remaining}张牌就获得胜利，UNO时刻！`,
     })
+  }
+
+  /** Home UNO + head UNO + HUD banner. */
+  private fireUnoMoment(info: {
+    playerId: string
+    playerName: string
+    score: number
+    remaining: number
+    winScore: number
+    message: string
+  }): void {
+    const slot = this.homeByPlayer.get(info.playerId)
+    if (typeof slot === 'number') {
+      this.homeYard?.setUnoAlert(slot, true)
+    }
+    const isLocal =
+      info.playerId === this.offlineLocalId ||
+      (!!this.net?.playerId && info.playerId === this.net.playerId)
+    if (isLocal) {
+      this.playerCtrl?.player.setUnoAlert(true)
+    } else {
+      this.remotes.setUnoAlert(info.playerId, true)
+    }
+    this.onUnoMoment?.(info)
+  }
+
+  private clearAllUnoAlerts(): void {
+    this.homeYard?.clearUnoAlerts()
+    this.remotes.clearAllUnoAlerts()
+    this.playerCtrl?.player.setUnoAlert(false)
   }
 
   private checkOfflineWin(): void {
@@ -306,6 +368,8 @@ export class Game {
   ): void {
     if (!this.offlineSolo || this.offlineEnding) return
     this.offlineEnding = true
+    this.matchLive = false
+
     const scores = this.offlineBots.getScores(
       this.offlineLocalId,
       this.offlineLocalName,
@@ -327,7 +391,26 @@ export class Game {
           ? `时间到！${names} 收集最多（${winners[0]!.score} 张）`
           : '时间到！无人得分'
 
+    // Freeze play: remove bots, block interact, keep field as-is under result UI
+    this.offlineBots.clear()
+    this.remotes.clear()
+    this.clearAllUnoAlerts()
+    this.cardSystem.setInteractBlocked(true)
+    this.cardSystem.setOfflineHomeYard(null)
+    this.onDeath?.(null)
+    this.playerCtrl.clearDeath()
+    this.playerCtrl.player.setHeldStack([])
+    this.onItem?.(null)
     this.onMatchClock?.(null, MATCH_WIN_SCORE)
+    this.onScores?.(scores)
+
+    // Unlock mouse so settlement / lobby buttons receive clicks
+    try {
+      document.exitPointerLock()
+    } catch {
+      /* ignore */
+    }
+
     this.onMatchEnd?.({
       reason,
       winners,
@@ -335,17 +418,28 @@ export class Game {
       winScore: MATCH_WIN_SCORE,
       message,
     })
+    // Full field reset happens in cleanupAfterOfflineMatch() when user dismisses UI
+  }
+
+  /**
+   * After settlement dialog dismissed — reset field and return to idle/lobby state.
+   */
+  cleanupAfterOfflineMatch(): void {
     this.endOfflineSolo()
   }
 
-  /** Stop offline solo and reset field for lobby. */
+  /** Stop offline solo and reset field for lobby / next match. */
   private endOfflineSolo(): void {
     this.offlineBots.clear()
     this.offlineSolo = false
     this.matchLive = false
     this.offlineEndsAt = 0
     this.offlineEnding = false
+    this.offlineWasDead = false
+    this.offlineFenceGraceUntil = 0
     this.offlineUnoAnnounced.clear()
+    this.offlineLastSlideAt = 0
+    this.offlineScoresKey = ''
     this.remotes.clear()
     this.applyDummyActive(false)
     this.onDeath?.(null)
@@ -356,18 +450,21 @@ export class Game {
       this.cardSystem.enterOfflineMode()
       this.cardSystem.setHomeIndex(homeConfig.defaultSlot)
       this.homeYard.clearAllPiles()
+      this.clearAllUnoAlerts()
       this.applyOfflineHomeLabels()
       this.playerCtrl.player.setHeldStack([])
+      this.playerCtrl.player.setHeldItem(null)
       this.teleportLocalToHome()
     }
     this.onMatchClock?.(null, MATCH_WIN_SCORE)
     this.onScores?.([])
   }
 
-  /** Bot slide hit local player: knock + drop backpack + stun. */
+  /** Bot slide hit local player: knock + random 1–4 drop + stun. */
   private applyOfflinePlayerSlideHit(hit: OfflineBotHitPlayer): void {
     if (!this.offlineSolo || this.playerCtrl.isDead()) return
-    this.dropLocalStackBurst(hit.fromX, hit.fromZ)
+    const n = randomSlideDropCount(this.cardSystem.getStack().length)
+    const dropped = this.dropLocalStackBurst(hit.fromX, hit.fromZ, n)
     this.playerCtrl.playKnockback(hit.toX, hit.toZ, hit.durationMs)
     this.playerCtrl.setStunUntil(Date.now() + STUN_DURATION_MS)
     this.playerCtrl.player.setStunnedUntil(
@@ -376,16 +473,30 @@ export class Game {
     )
     this.onPickupFeedback({
       type: 'toast',
-      text: `被机器人铲中！眩晕 ${(STUN_DURATION_MS / 1000).toFixed(1)}s`,
+      text:
+        dropped > 0
+          ? `被铲中！掉 ${dropped} 张 · 眩晕 ${(STUN_DURATION_MS / 1000).toFixed(1)}s`
+          : `被铲中！眩晕 ${(STUN_DURATION_MS / 1000).toFixed(1)}s`,
       kind: 'bad',
     })
     this.pushOfflineScores()
   }
 
-  private dropLocalStackBurst(x: number, z: number): void {
-    const cards = this.cardSystem.takeAllStack()
-    this.playerCtrl.player.setHeldStack([])
-    if (!cards.length) return
+  /**
+   * Burst-drop local backpack cards onto field.
+   * @param max if set, only top N cards (slide/mace); omit = all (fence death)
+   */
+  private dropLocalStackBurst(
+    x: number,
+    z: number,
+    max?: number,
+  ): number {
+    const cards =
+      max == null
+        ? this.cardSystem.takeAllStack()
+        : this.cardSystem.takeTopFromStack(max)
+    this.playerCtrl.player.setHeldStack([...this.cardSystem.getStack()])
+    if (!cards.length) return 0
     const drops = cards.map((card, i) => {
       const ang = (i / Math.max(1, cards.length)) * Math.PI * 2 + 0.2
       const rad = 0.75 + (i % 3) * 0.3
@@ -397,40 +508,54 @@ export class Game {
       }
     })
     this.cardSystem.spawnDropped(drops, { x, y: 1.0, z })
+    return cards.length
   }
 
   /** Local player steps into active foreign fence. */
   private electrocuteLocalOffline(fenceSlot: number): void {
-    if (!this.offlineSolo || this.playerCtrl.isDead()) return
+    if (!this.offlineSolo || this.offlineEnding || !this.matchLive) return
+    if (this.playerCtrl.isDead()) return
+    if (Date.now() < this.offlineFenceGraceUntil) return
     const pos = this.playerCtrl.getPosition()
+    // Fence death: drop entire backpack
     this.dropLocalStackBurst(pos.x, pos.z)
     const until = Date.now() + HOME_FENCE_DEATH_MS
     this.playerCtrl.setDeathUntil(until)
+    this.offlineWasDead = true
     this.onDeath?.({ until, durationMs: HOME_FENCE_DEATH_MS })
+    const corner = ['西南', '东南', '西北', '东北'][fenceSlot] ?? `${fenceSlot}`
     this.onPickupFeedback({
       type: 'toast',
-      text: `触电！老家电网（角 ${fenceSlot}）· ${HOME_FENCE_DEATH_MS / 1000}s 后重生`,
+      text: `触电！${corner}老家电网 · ${HOME_FENCE_DEATH_MS / 1000}s 后重生`,
       kind: 'bad',
     })
     this.pushOfflineScores()
   }
 
-  private processOfflineLocalRespawn(): void {
-    if (!this.offlineSolo) return
+  /**
+   * When death timer ends: hide mask, teleport home, short fence grace
+   * so we do not re-zap using the pre-teleport coordinates.
+   */
+  private processOfflineLocalRespawn(): boolean {
+    if (!this.offlineSolo) return false
     if (this.playerCtrl.isDead()) {
       this.offlineWasDead = true
-      return
+      return false
     }
-    if (!this.offlineWasDead) return
+    if (!this.offlineWasDead) return false
     this.offlineWasDead = false
     this.playerCtrl.clearDeath()
     this.onDeath?.(null)
     this.teleportLocalToHome()
+    // 0.4s grace — also re-sample position after teleport in the same tick
+    this.offlineFenceGraceUntil = Date.now() + 400
+    this.cameraFollow.snapTo(this.playerCtrl.getPosition())
     this.onPickupFeedback({
       type: 'toast',
       text: '已在自家重生',
       kind: 'ok',
     })
+    return true
   }
 
   /** Wire LAN client (optional). Offline still works without this. */
@@ -461,7 +586,7 @@ export class Game {
           )
           this.remotes.applyPlayerStacks(info.playerStacks ?? [])
           this.trapSystem?.setFromSnapshot(info.traps ?? [])
-          this.onMatchClock?.(info.matchEndsAt ?? null, info.winScore ?? 20)
+          this.onMatchClock?.(info.matchEndsAt ?? null, info.winScore ?? MATCH_WIN_SCORE)
           if (info.dummyActive) {
             const dummyStack = (info.playerStacks ?? []).find(
               (e) => e.playerId === TRAINING_DUMMY_ID,
@@ -518,7 +643,7 @@ export class Game {
       }),
       net.on('unoMoment', (info) => {
         if (!this.matchLive) return
-        this.onUnoMoment?.(info)
+        this.fireUnoMoment(info)
       }),
       net.on('matchEnd', (info) => {
         this.matchLive = false
@@ -526,6 +651,7 @@ export class Game {
         this.trapSystem?.clear()
         this.remotes.clearAllStacks()
         this.homeYard.clearAllPiles()
+        this.clearAllUnoAlerts()
         this.homeYard.setActiveFences([])
         this.cardSystem.enterOnlineMode()
         this.playerCtrl.player.setHeldStack([])
@@ -783,6 +909,7 @@ export class Game {
     item: UnoCardData | null = null,
   ): void {
     this.matchLive = true
+    this.clearAllUnoAlerts()
     if (!this.cardSystem.isOnline()) this.cardSystem.enterOnlineMode()
     if (teleportHome) this.teleportLocalToHome()
     this.cardSystem.applyGroundSnapshot(ground)
@@ -940,8 +1067,38 @@ export class Game {
   private teleportLocalToHome(): void {
     const slot = this.cardSystem?.getHomeIndex?.() ?? homeConfig.defaultSlot
     const sp = getHomeSlot(slot).spawn
-    this.playerCtrl.teleport(sp.x, sp.y, sp.z, 0)
+    // Soft stand height (not fall-in y=2.2) — avoids long drop / void after respawn
+    const y = this.playerCtrl.standingBodyY()
+    this.playerCtrl.teleport(sp.x, y, sp.z, 0)
     this.cameraFollow.snapTo(this.playerCtrl.getPosition())
+  }
+
+  /**
+   * If player fell off the map or NaN pose, pull back home.
+   * Mid-match "blue screen" is almost always camera following a void fall (sky clear color).
+   */
+  private rescueLocalIfNeeded(): void {
+    if (!this.playerCtrl) return
+    const ok = this.playerCtrl.ensureInArena(18.5)
+    if (!ok) {
+      this.teleportLocalToHome()
+      this.onPickupFeedback({
+        type: 'toast',
+        text: '已拉回场地',
+        kind: 'ok',
+      })
+      return
+    }
+    const p = this.playerCtrl.getPosition()
+    // Extreme fall still possible if ensure only clamps Y once — snap home
+    if (p.y < -2 || p.y > 20) {
+      this.teleportLocalToHome()
+      this.onPickupFeedback({
+        type: 'toast',
+        text: '已拉回场地',
+        kind: 'ok',
+      })
+    }
   }
 
   private detachNet(): void {
@@ -1069,12 +1226,37 @@ export class Game {
     this.cameraFollow.updateLook()
     this.playerCtrl.update(dt)
     this.physics.step()
-    const pos = this.playerCtrl.getPosition()
+    // After knock / stun / death: keep body in arena
+    this.rescueLocalIfNeeded()
+    // Slide / knock end: re-pin camera on standing pose
+    if (
+      this.playerCtrl.consumeSlideJustEnded() ||
+      this.playerCtrl.consumeKnockJustEnded()
+    ) {
+      this.rescueLocalIfNeeded()
+      this.cameraFollow.ensurePlayablePitch()
+      this.cameraFollow.snapTo(this.playerCtrl.getPosition())
+    }
+    let pos = this.playerCtrl.getPosition()
     this.cameraFollow.updatePosition(pos, dt)
+    // Continuous heal: orbit broken / too far → hard re-seat (mid-match “blue sky”)
+    if (this.cameraFollow.healIfBroken(pos)) {
+      pos = this.playerCtrl.getPosition()
+      this.cameraFollow.snapTo(pos)
+    }
 
-    if (this.offlineSolo && this.offlineBots.isActive) {
-      this.processOfflineLocalRespawn()
+    // Respawn even if bots already cleared (e.g. mid death when match freezes)
+    if (this.offlineSolo && this.matchLive) {
+      const justRespawned = this.processOfflineLocalRespawn()
+      if (justRespawned) {
+        pos = this.playerCtrl.getPosition()
+        this.cameraFollow.snapTo(pos)
+      }
+    }
+
+    if (this.offlineSolo && this.offlineBots.isActive && this.matchLive) {
       const hi = this.cardSystem.getHomeIndex()
+      pos = this.playerCtrl.getPosition()
       const playerSnap = {
         x: pos.x,
         z: pos.z,
@@ -1082,20 +1264,20 @@ export class Game {
         stunned: this.playerCtrl.isStunned(),
         onOwnHome: isInsideHomeSlot(hi, pos.x, pos.z),
         homeIndex: hi,
+        stackCount: this.cardSystem.getStack().length,
       }
       const fences = this.offlineBots.computeOwnerFences(playerSnap)
       this.homeYard.setActiveFences(fences)
       this.cardSystem.setFencedSlots(fences)
       this.offlineBots.setFencedSlots(fences)
 
-      // Step into fenced foreign home → death
-      if (!playerSnap.dead) {
+      // Step into fenced foreign home → death (skip grace after respawn)
+      if (
+        !playerSnap.dead &&
+        Date.now() >= this.offlineFenceGraceUntil
+      ) {
         const slot = this.homeYard.slotAt(pos.x, pos.z)
-        if (
-          slot !== null &&
-          slot !== hi &&
-          fences.includes(slot)
-        ) {
+        if (slot !== null && slot !== hi && fences.includes(slot)) {
           this.electrocuteLocalOffline(slot)
         }
       }
@@ -1104,7 +1286,12 @@ export class Game {
         this.playerCtrl.isDead() || this.playerCtrl.isStunned(),
       )
       this.cardSystem.update(pos, dt)
-      this.offlineBots.tick(dt, playerSnap)
+      this.offlineBots.tick(dt, {
+        ...playerSnap,
+        x: this.playerCtrl.getPosition().x,
+        z: this.playerCtrl.getPosition().z,
+        dead: this.playerCtrl.isDead(),
+      })
       this.pushOfflineScores()
       const botScores = this.offlineBots.getScores(
         this.offlineLocalId,
@@ -1118,6 +1305,10 @@ export class Game {
         }
       }
       this.checkOfflineWin()
+    } else if (this.offlineSolo && this.offlineBots.isActive && !this.matchLive) {
+      // How-to / pre-start: freeze bots & interactions, keep field visible
+      this.cardSystem.setInteractBlocked(true)
+      this.cardSystem.update(pos, dt)
     } else {
       this.cardSystem.update(pos, dt)
       // Non-match offline / lobby: only own-home fence visual
@@ -1179,7 +1370,7 @@ export class Game {
           })
         }
       }
-    } else if (this.offlineSolo) {
+    } else if (this.offlineSolo && this.matchLive && !this.offlineEnding) {
       // Local solo: slide works without WebSocket
       if (
         this.input.consumeAttack() &&
@@ -1199,7 +1390,11 @@ export class Game {
       }
     }
 
-    void this.renderer.render(this.scene, this.camera)
+    try {
+      void this.renderer.render(this.scene, this.camera)
+    } catch (err) {
+      console.error('[render]', err)
+    }
   }
 
   /** Client-side slide tackle vs offline bots (mirrors server trySlide). */

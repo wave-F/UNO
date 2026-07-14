@@ -25,6 +25,8 @@ type Layer = {
 export class HeadCardDisplay {
   readonly root = new THREE.Group()
   private layers: Layer[] = []
+  /** Last applied stack ids — skip rebuild when unchanged (critical for perf). */
+  private lastStackKey = ''
   private readonly countSprite: THREE.Sprite
   private readonly countCanvas: HTMLCanvasElement
   private readonly countCtx: CanvasRenderingContext2D
@@ -60,6 +62,11 @@ export class HeadCardDisplay {
 
   /** Rebuild pile: stack[0] against back → last card outermost (top of rules stack). */
   setStack(stack: readonly UnoCardData[]): void {
+    // Identity key — bots used to call this every frame and recreate textures → WebGPU die
+    const key = stack.map((c) => c.id).join('|')
+    if (key === this.lastStackKey) return
+    this.lastStackKey = key
+
     this.clearLayers()
 
     if (!stack.length) {

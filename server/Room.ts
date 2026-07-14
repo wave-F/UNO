@@ -563,7 +563,7 @@ export class Room {
     this.unoMomentAnnounced.add(playerId)
     const seat = this.seats.get(playerId)
     const playerName = seat?.name || playerId.slice(0, 6)
-    const message = `${playerName}玩家还差${remaining}张牌！UNO时刻！`
+    const message = `${playerName}玩家还差${remaining}张牌就获得胜利，UNO时刻！`
     this.broadcast({
       type: 'uno_moment',
       playerId,

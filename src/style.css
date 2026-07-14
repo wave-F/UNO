@@ -84,6 +84,11 @@ canvas {
   pointer-events: none;
 }
 
+/* Author `display: flex` must not override the HTML hidden attribute */
+.skill-cd-text[hidden] {
+  display: none !important;
+}
+
 #skill-slide.on-cd .skill-icon {
   border-color: rgba(148, 163, 184, 0.5);
   filter: saturate(0.65);
@@ -340,19 +345,71 @@ canvas {
     transform 0.25s ease-in;
 }
 
-#match-result {
+#match-result,
+#howto-panel {
   position: fixed;
   inset: 0;
-  z-index: 40;
+  z-index: 50;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(15, 23, 42, 0.55);
+  /* Opaque enough that sky/canvas does not read as a “blue screen” */
+  background: rgba(15, 23, 42, 0.82);
   pointer-events: auto;
+  cursor: default;
 }
 
-#match-result[hidden] {
+#match-result[hidden],
+#howto-panel[hidden] {
   display: none !important;
+}
+
+.howto-card {
+  max-width: min(480px, 94vw);
+  max-height: min(88vh, 720px);
+  overflow: auto;
+  padding: 26px 28px 22px;
+  border-radius: 16px;
+  background: linear-gradient(160deg, #1e293b, #0f172a);
+  border: 2px solid rgba(56, 189, 248, 0.5);
+  color: #f8fafc;
+  text-align: left;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
+}
+
+.howto-card h2 {
+  margin: 0 0 14px;
+  font-size: 1.45rem;
+  text-align: center;
+  color: #7dd3fc;
+}
+
+.howto-list {
+  margin: 0 0 14px;
+  padding-left: 1.15rem;
+  font-size: 0.95rem;
+  line-height: 1.55;
+}
+
+.howto-list li {
+  margin-bottom: 8px;
+}
+
+.howto-list strong {
+  color: #fde68a;
+}
+
+.howto-hint {
+  margin: 0 0 16px;
+  font-size: 0.82rem;
+  opacity: 0.8;
+  text-align: center;
+  line-height: 1.45;
+}
+
+.howto-card .match-result-btn {
+  display: block;
+  width: 100%;
 }
 
 .match-result-card {
