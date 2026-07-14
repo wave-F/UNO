@@ -79,6 +79,11 @@ export const homeConfig = {
   spawn: homeSlots[0]!.spawn,
   /** Respawn delay after fence electrocution. */
   fenceDeathMs: HOME_FENCE_DEATH_MS,
+  /**
+   * Steal must stand on the deposit pile (platform center), not just the door/edge.
+   * XZ radius around home center (pile sits at center in HomeBase).
+   */
+  pileStealRadius: 1.45,
 } as const
 
 export function getHomeSlot(index: number): HomeSlotDef {
@@ -90,6 +95,17 @@ export function isInsideHomeSlot(slotIndex: number, x: number, z: number): boole
   const { center } = getHomeSlot(slotIndex)
   const h = homeConfig.halfSize
   return Math.abs(x - center.x) <= h && Math.abs(z - center.z) <= h
+}
+
+/** True when standing on the home card pile (for steal), not merely on the platform. */
+export function isNearHomePile(
+  slotIndex: number,
+  x: number,
+  z: number,
+  radius = homeConfig.pileStealRadius,
+): boolean {
+  const { center } = getHomeSlot(slotIndex)
+  return Math.hypot(x - center.x, z - center.z) <= radius
 }
 
 /** Any of the 4 corner homes (spawn exclusion / zone checks). */

@@ -1,7 +1,8 @@
 /** Four UNO colors; numbers use these. Function cards may omit color. */
 export type UnoColor = 'red' | 'yellow' | 'green' | 'blue'
 
-export type UnoRank = '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | 'stun' | 'skip'
+/** Number ranks are 0–7 only (no 8/9 in this build). */
+export type UnoRank = '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | 'stun' | 'skip'
 
 export type UnoKind = 'number' | 'stun_bat' | 'skip_trap'
 

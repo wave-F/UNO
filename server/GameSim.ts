@@ -2,13 +2,18 @@
  * Authoritative card world for LAN match.
  * No Three.js — pure state + events.
  */
-import { cardSpawnConfig, CARD_PICKUP_RADIUS } from '../shared/config/cards.ts'
+import {
+  cardSpawnConfig,
+  cardsForSpawnWave,
+  CARD_PICKUP_RADIUS,
+} from '../shared/config/cards.ts'
 import {
   getHomeSlot,
   HOME_FENCE_DEATH_MS,
   homeConfig,
   isInsideAnyHome,
   isInsideHomeSlot,
+  isNearHomePile,
 } from '../shared/config/home.ts'
 import {
   TRAINING_DUMMY_ID,
@@ -479,10 +484,8 @@ export class GameSim {
     if (this.spawnTimer >= cardSpawnConfig.spawnIntervalSec) {
       this.spawnTimer = 0
       const room = cardSpawnConfig.maxOnField - this.ground.length
-      if (room > 0) {
-        const n = Math.min(cardSpawnConfig.spawnPerWave, room)
-        this.spawnCards(n)
-      }
+      const n = cardsForSpawnWave(room)
+      if (n > 0) this.spawnCards(n)
     }
 
     // Step on skip traps before interact (stunned victims still trigger? no — only walking)
@@ -995,11 +998,12 @@ export class GameSim {
       return
     }
 
-    // Other player's home: steal only if fence is off (fence check runs first each tick).
+    // Other player's home: steal only on the deposit pile (center), not platform edge
     const foreignSlot = this.homeSlotAt(x, z)
     if (foreignSlot !== null && foreignSlot !== p.homeIndex) {
       // Safety: never steal while that home's fence is listed active
       if (this.lastFenceActive.includes(foreignSlot)) return
+      if (!isNearHomePile(foreignSlot, x, z)) return
       this.tryStealFromHome(playerId, p, foreignSlot)
       return
     }

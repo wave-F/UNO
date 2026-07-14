@@ -1,16 +1,20 @@
 import * as THREE from 'three'
-import { cardSpawnConfig } from '../config/cards'
 import {
   getHomeSlot,
   homeConfig,
   isInsideAnyHome,
   isInsideHomeSlot,
+  isNearHomePile,
 } from '../config/home'
 import { createRandomCards } from '../game/uno/deck'
 import { canStackOn } from '../game/uno/rules'
 import { cardLabel, type UnoCardData } from '../game/uno/types'
 import { CardPickup } from '../entities/CardPickup'
-import { CARD_PICKUP_RADIUS } from '../../shared/config/cards'
+import {
+  cardSpawnConfig,
+  cardsForSpawnWave,
+  CARD_PICKUP_RADIUS,
+} from '../../shared/config/cards'
 import type { GroundCardWire } from '../../shared/protocol'
 
 export type PickupFeedback =
@@ -314,12 +318,14 @@ export class CardPickupSystem {
       return
     }
 
-    // Foreign home: try steal (if fence off)
+    // Foreign home: steal only on the pile (center), not just platform edge/door
     const foreign =
       this.homeYard?.slotAt(playerPos.x, playerPos.z) ??
       this.legacySlotAt(playerPos.x, playerPos.z)
     if (foreign !== null && foreign !== this.homeIndex) {
-      this.tryOfflineSteal(foreign)
+      if (isNearHomePile(foreign, playerPos.x, playerPos.z)) {
+        this.tryOfflineSteal(foreign)
+      }
       return
     }
 
@@ -427,9 +433,8 @@ export class CardPickupSystem {
     this.spawnTimer = 0
 
     const room = cardSpawnConfig.maxOnField - this.cards.size
-    if (room <= 0) return
-
-    const n = Math.min(cardSpawnConfig.spawnPerWave, room)
+    const n = cardsForSpawnWave(room)
+    if (n <= 0) return
     this.spawnLocal(n, playerPos)
   }
 

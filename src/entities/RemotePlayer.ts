@@ -79,6 +79,11 @@ export class RemotePlayer {
     this.player.mesh.visible = true
   }
 
+  setVisible(visible: boolean): void {
+    this.root.visible = visible
+    this.player.setAvatarVisible(visible)
+  }
+
   /**
    * Offline / local bots: place immediately (no network interp).
    * Avoids sitting at world origin until the first interpolated sample.

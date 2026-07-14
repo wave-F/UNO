@@ -321,6 +321,11 @@ export class Player {
     return this.stunFx.isActive()
   }
 
+  /** Hide / show whole avatar (fence death vanish). */
+  setAvatarVisible(visible: boolean): void {
+    this.mesh.visible = visible
+  }
+
   setHeldStack(stack: readonly UnoCardData[]): void {
     this.heldCount = stack.length
     this.headCard.setStack(stack)

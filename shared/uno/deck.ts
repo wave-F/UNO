@@ -6,7 +6,7 @@ import {
 } from './types.ts'
 
 const COLORS: UnoColor[] = ['red', 'yellow', 'green', 'blue']
-const NUMBERS: UnoRank[] = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']
+const NUMBERS: UnoRank[] = ['0', '1', '2', '3', '4', '5', '6', '7']
 
 /** Default field mix: pure numbers (mace / Skip not auto-spawned). */
 export const DEFAULT_STUN_FRACTION = 0

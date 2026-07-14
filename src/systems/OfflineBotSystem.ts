@@ -1,4 +1,10 @@
-import { getHomeSlot, homeConfig, isInsideHomeSlot } from '../../shared/config/home'
+import {
+  getHomeSlot,
+  homeConfig,
+  isInsideHomeSlot,
+  isNearHomePile,
+} from '../../shared/config/home'
+import { MATCH_UNO_REMAINING, MATCH_WIN_SCORE } from '../../shared/config/match'
 import { maxSpeedForCarry } from '../../shared/config/movement'
 import { canStackOn } from '../../shared/uno/rules'
 import {
@@ -63,6 +69,12 @@ type OfflineBot = {
   stolenFromHomes: Set<number>
   slideCd: number
   raidCd: number
+  /**
+   * Empty-hand raid commitment: keep going to this home until steal / fail / timeout.
+   * Prevents 0.3s retarget flipping to a nearby field card.
+   */
+  raidSlot: number | null
+  raidCommitLeft: number
 }
 
 export type OfflineBotHitPlayer = {
@@ -85,11 +97,36 @@ export class OfflineBotSystem {
   private remotes: RemotePlayerSystem | null = null
   private active = false
   private fenced = new Set<number>()
+  /** Home slots in UNO zone (close to win) — bots raid these harder. */
+  private unoThreatSlots = new Set<number>()
   private onHitPlayer: ((hit: OfflineBotHitPlayer) => void) | null = null
   private onLocalHomeStolen: (() => void) | null = null
+  private pendingZaps: { x: number; y: number; z: number }[] = []
 
   get isActive(): boolean {
     return this.active
+  }
+
+  /** True when any competitor is within MATCH_UNO_REMAINING of win. */
+  get hasUnoPressure(): boolean {
+    return this.unoThreatSlots.size > 0
+  }
+
+  /**
+   * Refresh UNO pressure from current scores (call each match tick).
+   * Threat = score in [WIN−UNO_REMAINING, WIN) — same band as UNO banner.
+   */
+  setUnoPressureFromScores(
+    entries: { homeIndex: number; score: number }[],
+  ): void {
+    this.unoThreatSlots.clear()
+    const lo = MATCH_WIN_SCORE - MATCH_UNO_REMAINING
+    for (const e of entries) {
+      if (e.homeIndex < 0 || e.homeIndex > 3) continue
+      if (e.score >= lo && e.score < MATCH_WIN_SCORE) {
+        this.unoThreatSlots.add(e.homeIndex)
+      }
+    }
   }
 
   start(
@@ -137,6 +174,8 @@ export class OfflineBotSystem {
         stolenFromHomes: new Set(),
         slideCd: 2 + Math.random() * 3,
         raidCd: Math.random() * 2,
+        raidSlot: null,
+        raidCommitLeft: 0,
       }
       this.bots.push(bot)
       remotes.upsert(id, name, homeIndex)
@@ -156,6 +195,7 @@ export class OfflineBotSystem {
     this.remotes = null
     this.active = false
     this.fenced.clear()
+    this.unoThreatSlots.clear()
     this.onHitPlayer = null
     this.onLocalHomeStolen = null
   }
@@ -237,31 +277,38 @@ export class OfflineBotSystem {
     return this.knockBot(bot, dirX, dirZ, attackerX, attackerZ, now)
   }
 
-  /** Electrocute bot on fenced foreign home — full drop + death. */
-  tryElectrocuteBot(botId: string): boolean {
+  /**
+   * Electrocute bot on fenced foreign home.
+   * Drop cards, vanish immediately (no 5s stun pose); respawn later at home.
+   * @returns zap world position if electrocuted, else null
+   */
+  tryElectrocuteBot(
+    botId: string,
+  ): { x: number; y: number; z: number } | null {
     const bot = this.bots.find((b) => b.id === botId)
-    if (!bot || !this.cards || !this.remotes || !this.homes) return false
+    if (!bot || !this.cards || !this.remotes || !this.homes) return null
     const now = Date.now()
-    if (now < bot.deathUntil) return false
+    if (now < bot.deathUntil) return null
 
     const slot = this.homes.slotAt(bot.x, bot.z)
-    if (slot === null || slot === bot.homeIndex) return false
-    if (!this.fenced.has(slot)) return false
+    if (slot === null || slot === bot.homeIndex) return null
+    if (!this.fenced.has(slot)) return null
 
+    const zap = { x: bot.x, y: STAND_Y, z: bot.z }
     this.dropAllBotCards(bot)
     bot.deathUntil = now + homeConfig.fenceDeathMs
-    bot.stunUntil = bot.deathUntil
+    bot.stunUntil = 0 // do not stand stunned — vanish
     bot.stack = []
     this.remotes.setPlayerStack(bot.id, [])
-    this.remotes.setStunned(bot.id, bot.deathUntil, homeConfig.fenceDeathMs)
-    return true
+    this.remotes.setVisible(bot.id, false)
+    return zap
   }
 
   tick(dt: number, player: OfflinePlayerSnap): void {
     if (!this.active || !this.cards || !this.homes || !this.remotes) return
     const now = Date.now()
     for (const bot of this.bots) {
-      // Respawn after fence death
+      // Respawn after fence death — appear at home, not at death spot
       if (bot.deathUntil > 0 && now >= bot.deathUntil) {
         const home = getHomeSlot(bot.homeIndex).center
         bot.x = home.x
@@ -271,6 +318,7 @@ export class OfflineBotSystem {
         bot.stack = []
         bot.stolenFromHomes.clear()
         this.remotes.setPlayerStack(bot.id, [])
+        this.remotes.setVisible(bot.id, true)
         this.remotes.pushPoseNow(
           bot.id,
           bot.x,
@@ -283,11 +331,24 @@ export class OfflineBotSystem {
         )
       }
 
+      // Dead: stay invisible, no AI / pose spam at death spot
+      if (now < bot.deathUntil) continue
+
       this.tickOne(bot, dt, player, now)
-      // Pass dt so RemotePlayer can drive limb walk from position delta
+      // After move: fence zap (vanish + FX at death pos)
+      const zap = this.tryElectrocuteBot(bot.id)
+      if (zap) this.pendingZaps.push(zap)
+      if (now < bot.deathUntil) continue
       this.remotes.pushPoseNow(bot.id, bot.x, STAND_Y, bot.z, bot.yaw, true, dt)
       this.remotes.setPlayerStack(bot.id, bot.stack)
     }
+  }
+
+  /** Consume zap positions for ElectrocuteFx (fence deaths this frame). */
+  takePendingZaps(): { x: number; y: number; z: number }[] {
+    const z = this.pendingZaps
+    this.pendingZaps = []
+    return z
   }
 
   private tickOne(
@@ -301,14 +362,35 @@ export class OfflineBotSystem {
 
     bot.slideCd = Math.max(0, bot.slideCd - dt)
     bot.raidCd = Math.max(0, bot.raidCd - dt)
+    bot.raidCommitLeft = Math.max(0, bot.raidCommitLeft - dt)
     bot.retargetT -= dt
+
+    const emptyRaidCommit =
+      bot.stack.length === 0 &&
+      bot.mode === 'raid' &&
+      bot.raidSlot != null &&
+      bot.raidCommitLeft > 0
+
     if (bot.retargetT <= 0) {
       bot.retargetT = 0.32 + Math.random() * 0.22
-      this.chooseTarget(bot, player)
+      if (emptyRaidCommit) {
+        // Empty-hand raid: stay on target, only revalidate / refresh coords
+        if (this.raidTargetStillValid(bot, bot.raidSlot!)) {
+          const c = getHomeSlot(bot.raidSlot!).center
+          bot.targetX = c.x
+          bot.targetZ = c.z
+          bot.mode = 'raid'
+        } else {
+          this.clearRaidCommit(bot)
+          this.chooseTarget(bot, player)
+        }
+      } else {
+        this.chooseTarget(bot, player)
+      }
     }
 
-    // Occasional slide at any nearby carrier (player or other bot)
-    if (bot.slideCd <= 0 && bot.stack.length < MAX_CARRY) {
+    // Occasional slide — not while committed to an empty-hand raid
+    if (!emptyRaidCommit && bot.slideCd <= 0 && bot.stack.length < MAX_CARRY) {
       const target = this.pickSlideTarget(bot, player, now)
       if (target) {
         const d = Math.hypot(target.x - bot.x, target.z - bot.z)
@@ -331,8 +413,7 @@ export class OfflineBotSystem {
       bot.z += (dz / dist) * step
     }
 
-    // Electrocute if stepped into fenced foreign home
-    if (this.tryElectrocuteBot(bot.id)) return
+    // Electrocute handled in Game after tick (needs FX spawn)
 
     // Deposit at own home
     if (bot.stack.length > 0 && isInsideHomeSlot(bot.homeIndex, bot.x, bot.z)) {
@@ -340,31 +421,76 @@ export class OfflineBotSystem {
       bot.score = n
       bot.stack = []
       bot.stolenFromHomes.clear()
+      this.clearRaidCommit(bot)
       this.remotes!.setPlayerStack(bot.id, [])
       bot.retargetT = 0
       return
     }
 
-    // Steal foreign home (player or other bot homes)
+    // Steal foreign home — must stand on pile (center), not only platform door
     const foreign = this.homes!.slotAt(bot.x, bot.z)
     if (
       foreign !== null &&
       foreign !== bot.homeIndex &&
       bot.stack.length < MAX_CARRY
     ) {
-      this.botTrySteal(bot, foreign)
+      if (isNearHomePile(foreign, bot.x, bot.z)) {
+        const before = bot.stack.length
+        this.botTrySteal(bot, foreign)
+        if (bot.stack.length > before) {
+          this.clearRaidCommit(bot)
+          bot.retargetT = 0
+        } else if (emptyRaidCommit && foreign === bot.raidSlot) {
+          // On pile but cannot steal (fence / illegal / empty) — abort commit
+          this.clearRaidCommit(bot)
+          bot.retargetT = 0
+        }
+      }
+      // On platform but not yet on pile: keep walking (raid target is pile center)
       return
     }
 
-    // Field pickup
-    if (bot.stack.length < MAX_CARRY) {
+    // Field pickup — skip while empty-hand raid is committed
+    if (!emptyRaidCommit && bot.stack.length < MAX_CARRY) {
       const picked = this.cards!.tryPickupAt(bot.x, bot.z, bot.stack)
       if (picked) {
         bot.stack = picked
+        this.clearRaidCommit(bot)
         this.remotes!.setPlayerStack(bot.id, bot.stack)
         bot.retargetT = 0
       }
     }
+
+    // Commit timed out without steal
+    if (
+      bot.stack.length === 0 &&
+      bot.mode === 'raid' &&
+      bot.raidSlot != null &&
+      bot.raidCommitLeft <= 0
+    ) {
+      this.clearRaidCommit(bot)
+      bot.retargetT = 0
+    }
+  }
+
+  private clearRaidCommit(bot: OfflineBot): void {
+    bot.raidSlot = null
+    bot.raidCommitLeft = 0
+    if (bot.mode === 'raid') bot.mode = 'seek'
+  }
+
+  /** Can still usefully walk to this home to steal? */
+  private raidTargetStillValid(bot: OfflineBot, slot: number): boolean {
+    if (!this.homes) return false
+    if (slot === bot.homeIndex) return false
+    if (this.fenced.has(slot)) return false
+    if (bot.stolenFromHomes.has(slot)) return false
+    if (this.homes.getCount(slot) <= 0) return false
+    const pileTop = this.homes.getTop(slot)
+    if (!pileTop) return false
+    const top = bot.stack.length ? bot.stack[bot.stack.length - 1]! : null
+    if (top && !canStackOn(top, pileTop)) return false
+    return true
   }
 
   /** Closest worthwhile slide target: carriers only (player or bots). */
@@ -517,20 +643,43 @@ export class OfflineBotSystem {
       return
     }
 
-    // Prefer raid when cooldown allows
-    if (bot.raidCd <= 0 && bot.stack.length < MAX_CARRY) {
+    const uno = this.hasUnoPressure
+    // UNO pressure: raid more often, shorter CD, prefer threat homes (see findRaid)
+    const raidReady = uno ? bot.raidCd <= 0.35 : bot.raidCd <= 0
+    if (raidReady && bot.stack.length < MAX_CARRY) {
       const raid = this.findRaid(bot)
-      if (raid && Math.random() < (bot.stack.length === 0 ? 0.72 : 0.55)) {
-        bot.mode = 'raid'
-        bot.targetX = raid.x
-        bot.targetZ = raid.z
-        bot.raidCd = 1.8 + Math.random() * 1.4
-        return
+      if (raid) {
+        // Empty hand: 50% normal, 75% after UNO pressure; carrying: 55% / 88%
+        const pRaid = uno
+          ? bot.stack.length === 0
+            ? 0.75
+            : 0.88
+          : bot.stack.length === 0
+            ? 0.5
+            : 0.55
+        if (Math.random() < pRaid) {
+          bot.mode = 'raid'
+          bot.targetX = raid.x
+          bot.targetZ = raid.z
+          bot.raidCd = uno
+            ? 0.55 + Math.random() * 0.7 // ~0.55–1.25s
+            : 1.8 + Math.random() * 1.4
+          // Empty hand: commit until steal / fail / ~8s (don't flip to field cards mid-path)
+          if (bot.stack.length === 0) {
+            bot.raidSlot = raid.slot
+            bot.raidCommitLeft = 8
+          } else {
+            bot.raidSlot = null
+            bot.raidCommitLeft = 0
+          }
+          return
+        }
       }
     }
 
     // Hunt a nearby carrier (player or another bot) to set up a slide
-    if (bot.slideCd <= 1.5 && Math.random() < 0.28) {
+    // Slightly less hunt when UNO — prefer stealing lead homes
+    if (bot.slideCd <= 1.5 && Math.random() < (uno ? 0.18 : 0.28)) {
       const hunt = this.pickHuntTarget(bot, player, Date.now())
       if (hunt) {
         bot.mode = 'hunt'
@@ -573,6 +722,10 @@ export class OfflineBotSystem {
       bot.mode = 'raid'
       bot.targetX = raid.x + (Math.random() * 2 - 1)
       bot.targetZ = raid.z + (Math.random() * 2 - 1)
+      if (bot.stack.length === 0) {
+        bot.raidSlot = raid.slot
+        bot.raidCommitLeft = 8
+      }
       return
     }
 
@@ -608,10 +761,13 @@ export class OfflineBotSystem {
     return best
   }
 
-  private findRaid(bot: OfflineBot): { x: number; z: number } | null {
+  private findRaid(
+    bot: OfflineBot,
+  ): { x: number; z: number; slot: number } | null {
     if (!this.homes) return null
     const top = bot.stack.length ? bot.stack[bot.stack.length - 1]! : null
-    let best: { x: number; z: number; score: number } | null = null
+    let best: { x: number; z: number; slot: number; score: number } | null =
+      null
     for (let slot = 0; slot < 4; slot++) {
       if (slot === bot.homeIndex) continue
       if (this.fenced.has(slot)) continue
@@ -622,9 +778,13 @@ export class OfflineBotSystem {
       if (!pileTop) continue
       if (top && !canStackOn(top, pileTop)) continue
       const c = getHomeSlot(slot).center
-      const score = -count + Math.random() * 0.4
+      // Prefer fatter piles; under UNO, hard-prefer homes of players close to win
+      let score = -count + Math.random() * 0.4
+      if (this.unoThreatSlots.has(slot)) {
+        score -= 12 + count * 0.15
+      }
       if (!best || score < best.score) {
-        best = { x: c.x, z: c.z, score }
+        best = { x: c.x, z: c.z, slot, score }
       }
     }
     return best

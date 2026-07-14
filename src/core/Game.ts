@@ -42,6 +42,7 @@ import {
 import type { OfflineBotHitPlayer } from '../systems/OfflineBotSystem'
 import { TrainingDummy } from '../entities/TrainingDummy'
 import { WorldSlideCorridor } from '../entities/SlideRangeVisual'
+import { ElectrocuteFx } from '../entities/ElectrocuteFx'
 import { OfflineBotSystem } from '../systems/OfflineBotSystem'
 
 export class Game {
@@ -59,6 +60,7 @@ export class Game {
   private trainingDummy: TrainingDummy | null = null
   private pendingDummyStack: UnoCardData[] | null = null
   private slideCorridor: WorldSlideCorridor | null = null
+  private zapFx: ElectrocuteFx[] = []
   private net: NetClient | null = null
   private unsubs: Array<() => void> = []
   private clock = new THREE.Clock()
@@ -511,14 +513,33 @@ export class Game {
     return cards.length
   }
 
+  private spawnZapFx(x: number, y: number, z: number): void {
+    const fx = new ElectrocuteFx(x, y, z)
+    this.scene.add(fx.root)
+    this.zapFx.push(fx)
+  }
+
+  private updateZapFx(dt: number): void {
+    for (let i = this.zapFx.length - 1; i >= 0; i--) {
+      const fx = this.zapFx[i]!
+      if (fx.update(dt)) {
+        this.scene.remove(fx.root)
+        fx.dispose()
+        this.zapFx.splice(i, 1)
+      }
+    }
+  }
+
   /** Local player steps into active foreign fence. */
   private electrocuteLocalOffline(fenceSlot: number): void {
     if (!this.offlineSolo || this.offlineEnding || !this.matchLive) return
     if (this.playerCtrl.isDead()) return
     if (Date.now() < this.offlineFenceGraceUntil) return
     const pos = this.playerCtrl.getPosition()
-    // Fence death: drop entire backpack
+    // Fence death: drop entire backpack, play zap, vanish (no 5s stand-still)
     this.dropLocalStackBurst(pos.x, pos.z)
+    this.spawnZapFx(pos.x, pos.y, pos.z)
+    this.playerCtrl.player.setAvatarVisible(false)
     const until = Date.now() + HOME_FENCE_DEATH_MS
     this.playerCtrl.setDeathUntil(until)
     this.offlineWasDead = true
@@ -526,28 +547,29 @@ export class Game {
     const corner = ['西南', '东南', '西北', '东北'][fenceSlot] ?? `${fenceSlot}`
     this.onPickupFeedback({
       type: 'toast',
-      text: `触电！${corner}老家电网 · ${HOME_FENCE_DEATH_MS / 1000}s 后重生`,
+      text: `触电消失！${corner}电网 · ${HOME_FENCE_DEATH_MS / 1000}s 后自家重生`,
       kind: 'bad',
     })
     this.pushOfflineScores()
   }
 
   /**
-   * When death timer ends: hide mask, teleport home, short fence grace
-   * so we do not re-zap using the pre-teleport coordinates.
+   * When death timer ends: show avatar, teleport home, short fence grace.
    */
   private processOfflineLocalRespawn(): boolean {
     if (!this.offlineSolo) return false
     if (this.playerCtrl.isDead()) {
       this.offlineWasDead = true
+      // Stay invisible while dead
+      this.playerCtrl.player.setAvatarVisible(false)
       return false
     }
     if (!this.offlineWasDead) return false
     this.offlineWasDead = false
     this.playerCtrl.clearDeath()
+    this.playerCtrl.player.setAvatarVisible(true)
     this.onDeath?.(null)
     this.teleportLocalToHome()
-    // 0.4s grace — also re-sample position after teleport in the same tick
     this.offlineFenceGraceUntil = Date.now() + 400
     this.cameraFollow.snapTo(this.playerCtrl.getPosition())
     this.onPickupFeedback({
@@ -845,7 +867,10 @@ export class Game {
       }),
       net.on('playerDied', (info) => {
         if (!this.matchLive) return
+        const pos = this.playerCtrl.getPosition()
         if (info.playerId === net.playerId) {
+          this.spawnZapFx(pos.x, pos.y, pos.z)
+          this.playerCtrl.player.setAvatarVisible(false)
           this.playerCtrl.setDeathUntil(info.until)
           this.playerCtrl.player.setHeldStack([])
           this.playerCtrl.player.setHeldItem(null)
@@ -853,10 +878,11 @@ export class Game {
           this.onDeath?.({ until: info.until, durationMs: info.durationMs })
           this.onPickupFeedback({
             type: 'toast',
-            text: '触电！5 秒后在自家重生',
+            text: '触电消失！稍后在自家重生',
             kind: 'bad',
           })
         } else {
+          this.remotes.setVisible(info.playerId, false)
           this.onPickupFeedback({
             type: 'toast',
             text: '有人被老家电网电死了',
@@ -868,6 +894,7 @@ export class Game {
         if (!this.matchLive) return
         if (info.playerId === net.playerId) {
           this.playerCtrl.clearDeath()
+          this.playerCtrl.player.setAvatarVisible(true)
           this.playerCtrl.teleport(info.x, info.y, info.z, 0)
           this.cameraFollow.snapTo(this.playerCtrl.getPosition())
           this.onDeath?.(null)
@@ -876,6 +903,8 @@ export class Game {
             text: '已在自家重生',
             kind: 'ok',
           })
+        } else {
+          this.remotes.setVisible(info.playerId, true)
         }
         // Remotes snap via next world_state poses
       }),
@@ -1286,12 +1315,33 @@ export class Game {
         this.playerCtrl.isDead() || this.playerCtrl.isStunned(),
       )
       this.cardSystem.update(pos, dt)
+      // UNO band: bots raid harder / target threat homes
+      {
+        const scoreRows = this.offlineBots.getScores(
+          this.offlineLocalId,
+          this.offlineLocalName,
+          this.cardSystem.getDeliveredTotal(),
+          this.cardSystem.getStack().length,
+        )
+        this.offlineBots.setUnoPressureFromScores(
+          scoreRows.map((s) => ({
+            homeIndex:
+              s.id === this.offlineLocalId
+                ? homeConfig.defaultSlot
+                : (this.homeByPlayer.get(s.id) ?? -1),
+            score: s.score,
+          })),
+        )
+      }
       this.offlineBots.tick(dt, {
         ...playerSnap,
         x: this.playerCtrl.getPosition().x,
         z: this.playerCtrl.getPosition().z,
         dead: this.playerCtrl.isDead(),
       })
+      for (const z of this.offlineBots.takePendingZaps()) {
+        this.spawnZapFx(z.x, z.y, z.z)
+      }
       this.pushOfflineScores()
       const botScores = this.offlineBots.getScores(
         this.offlineLocalId,
@@ -1323,6 +1373,7 @@ export class Game {
     this.trainingDummy?.update(dt)
     this.slideCorridor?.update(dt)
     this.homeYard?.update(dt)
+    this.updateZapFx(dt)
 
     if (this.net?.isPlaying) {
       this.net.tickPose(dt, {

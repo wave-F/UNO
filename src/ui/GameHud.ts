@@ -142,10 +142,10 @@ export class GameHud {
     this.deathEl.hidden = true
     this.deathEl.innerHTML = `
       <div class="death-card">
-        <div class="death-title">触电身亡</div>
-        <div class="death-sub">老家电网 · 背包与道具已掉落</div>
+        <div class="death-title">触电消失</div>
+        <div class="death-sub">老家电网 · 已掉落背包 · 角色暂时消失</div>
         <div class="death-cd" id="death-cd">5.0</div>
-        <div class="death-hint">秒后在自家重生</div>
+        <div class="death-hint">秒后在自家出现</div>
       </div>
     `
     document.body.appendChild(this.deathEl)
@@ -256,7 +256,8 @@ export class GameHud {
         <ul class="howto-list">
           <li><strong>目标</strong>：先把牌送回自家 <strong>${MATCH_WIN_SCORE} 张</strong>即胜。</li>
           <li><strong>移动</strong>：鼠标控制朝向，<strong>WASD</strong> 移动，<strong>左键</strong>铲人。</li>
-          <li><strong>拾取</strong>：按照 UNO 规则拾取数字牌。</li>
+          <li><strong>拾取</strong>：按照 <strong>UNO</strong> 规则拾取数字牌。</li>
+          <li><strong>偷卡</strong>：可以去对方 <strong>HOME</strong> 拾取卡牌！<strong>（小心被电）</strong></li>
         </ul>
         <button type="button" class="match-result-btn" id="howto-ok">知道了，开始游戏</button>
       </div>

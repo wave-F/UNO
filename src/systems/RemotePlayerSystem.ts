@@ -243,6 +243,10 @@ export class RemotePlayerSystem {
     this.remove(id)
   }
 
+  setVisible(id: string, visible: boolean): void {
+    this.remotes.get(id)?.setVisible(visible)
+  }
+
   private add(id: string, name: string, homeIndex?: number): RemotePlayer {
     const remote = new RemotePlayer(id, name, this.colorSeq++)
     this.remotes.set(id, remote)
