@@ -15,11 +15,11 @@ const net = new NetClient()
 const game = new Game(app, (fb) => hud.handleFeedback(fb))
 
 const lobby = new LobbyPanel(net, {
-  onOfflinePlay: () => {
-    // 单机：保持本地卡牌权威（Game 默认 offline）
+  onSoloPlay: (playerName) => {
+    game.startOfflineSolo(playerName, 3)
   },
   onMatchStart: () => {
-    // 联机对局开始，大厅已隐藏；Game 通过 net 事件加载牌
+    // Future LAN match start
   },
   onBackToLobby: () => {
     lobby.show()
@@ -30,16 +30,18 @@ game
   .init()
   .then(() => {
     game.attachNet(net)
-    game.setScoresListener((scores) => hud.setScores(scores, net.playerId))
+    game.setScoresListener((scores) =>
+      hud.setScores(scores, game.isOfflineSolo() ? 'local_player' : net.playerId),
+    )
     game.setItemListener((item) => hud.setHeldItem(item))
     game.setPointerLockListener((locked) => hud.setPointerLocked(locked))
     game.setMatchClockListener((endsAt, winScore) => {
       hud.setMatchClock(endsAt, winScore)
-      // New match: dummy hidden until user clicks left button
       if (endsAt != null) hud.setDummyButtonState(false)
     })
     game.setMatchEndListener((info) => {
-      hud.showMatchEnd(info, net.playerId)
+      const offlineLocal = info.scores.some((s) => s.id === 'local_player')
+      hud.showMatchEnd(info, offlineLocal ? 'local_player' : net.playerId)
       hud.setDummyButtonState(false)
       lobby.show()
       lobby.flashMatchEnd(info.message)
@@ -55,6 +57,14 @@ game
       else hud.hideDeath()
     })
     hud.setDebugGiveListener((kind) => {
+      if (game.isOfflineSolo()) {
+        hud.handleFeedback({
+          type: 'toast',
+          text: '单机模式暂不支持调试加道具',
+          kind: 'bad',
+        })
+        return
+      }
       if (!net.isPlaying) {
         hud.handleFeedback({
           type: 'toast',
@@ -81,6 +91,14 @@ game
       })
     })
     hud.setToggleDummyListener(() => {
+      if (game.isOfflineSolo()) {
+        hud.handleFeedback({
+          type: 'toast',
+          text: '单机模式暂不支持木头人',
+          kind: 'bad',
+        })
+        return
+      }
       if (!net.isPlaying) {
         hud.handleFeedback({
           type: 'toast',
@@ -98,7 +116,6 @@ game
         })
         return
       }
-      // UI updates when server broadcasts dummy_state
     })
     game.start()
   })

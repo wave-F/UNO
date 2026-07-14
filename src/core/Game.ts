@@ -1,6 +1,11 @@
 import * as THREE from 'three'
 import { WebGPURenderer } from 'three/webgpu'
-import { getHomeSlot, homeConfig, isInsideHomeSlot } from '../config/home'
+import {
+  getHomeSlot,
+  homeConfig,
+  HOME_FENCE_DEATH_MS,
+  isInsideHomeSlot,
+} from '../config/home'
 import { initRapier, PhysicsWorld } from './Physics'
 import { InputManager } from '../managers/InputManager'
 import { Environment } from '../entities/Environment'
@@ -15,10 +20,28 @@ import {
 import { RemotePlayerSystem } from '../systems/RemotePlayerSystem'
 import { SkipTrapSystem } from '../systems/SkipTrapSystem'
 import { TRAINING_DUMMY_ID } from '../../shared/config/dummy'
+import {
+  MATCH_DURATION_MS,
+  MATCH_UNO_REMAINING,
+  MATCH_WIN_SCORE,
+} from '../../shared/config/match'
 import type { PublicPlayer } from '../../shared/protocol'
-import { isSkipTrap, type UnoCardData } from '../game/uno/types'
+import {
+  isSkipTrap,
+  SLIDE_BASE_DIST,
+  SLIDE_COOLDOWN_MS,
+  SLIDE_DIST_MIN_MULT,
+  SLIDE_DIST_PENALTY_PER_CARD,
+  SLIDE_DURATION_MS,
+  SLIDE_HIT_RADIUS,
+  SLIDE_RECOVER_MS,
+  STUN_DURATION_MS,
+  type UnoCardData,
+} from '../game/uno/types'
+import type { OfflineBotHitPlayer } from '../systems/OfflineBotSystem'
 import { TrainingDummy } from '../entities/TrainingDummy'
 import { WorldSlideCorridor } from '../entities/SlideRangeVisual'
+import { OfflineBotSystem } from '../systems/OfflineBotSystem'
 
 export class Game {
   private renderer!: WebGPURenderer
@@ -146,6 +169,269 @@ export class Game {
   }
 
   private matchLive = false
+  /** Solo offline match (local cards + client bots, no WebSocket). */
+  private offlineSolo = false
+  private offlineBots = new OfflineBotSystem()
+  private offlineLocalId = 'local_player'
+  private offlineLocalName = '你'
+  private offlineEndsAt = 0
+  private offlineEnding = false
+  private offlineUnoAnnounced = new Set<string>()
+  private offlineLastSlideAt = 0
+  private offlineWasDead = false
+
+  /**
+   * Single-player: local UNO field + 3 AI bots, 2 min / 20 cards rules.
+   * No network required (works on static HTTPS hosting).
+   */
+  startOfflineSolo(playerName = '你', botCount = 3): void {
+    if (this.net?.isPlaying) return
+    this.endOfflineSolo()
+    this.offlineSolo = true
+    this.offlineEnding = false
+    this.offlineUnoAnnounced.clear()
+    this.offlineLastSlideAt = 0
+    this.offlineWasDead = false
+    this.offlineLocalName = (playerName || '你').trim().slice(0, 16) || '你'
+    this.matchLive = true
+
+    this.trapSystem?.clear()
+    this.applyDummyActive(false)
+    this.remotes.clear()
+    this.remotes.setLocalPlayerId(this.offlineLocalId)
+    this.homeYard.clearAllPiles()
+    this.cardSystem.enterOfflineMode()
+    this.cardSystem.setHomeIndex(homeConfig.defaultSlot)
+    this.cardSystem.setOfflineHomeYard(this.homeYard)
+    this.playerCtrl.player.setHeldStack([])
+    this.playerCtrl.player.setHeldItem(null)
+    this.playerCtrl.clearDeath()
+    this.onDeath?.(null)
+    this.onItem?.(null)
+
+    const owners = new Map<string, { homeIndex: number; name: string }>()
+    owners.set(this.offlineLocalId, {
+      homeIndex: homeConfig.defaultSlot,
+      name: this.offlineLocalName,
+    })
+    // Bots will use homes 1–3
+    for (let i = 0; i < Math.min(3, botCount); i++) {
+      owners.set(`offline_bot_${i + 1}`, {
+        homeIndex: i + 1,
+        name: `Bot${i + 1}`,
+      })
+    }
+    this.homeYard.applyOwnership({
+      localHomeIndex: homeConfig.defaultSlot,
+      owners,
+      localPlayerId: this.offlineLocalId,
+    })
+    this.teleportLocalToHome()
+
+    this.offlineBots.start(botCount, this.cardSystem, this.homeYard, this.remotes, {
+      onHitPlayer: (hit) => this.applyOfflinePlayerSlideHit(hit),
+      onLocalHomeStolen: () => {
+        this.cardSystem.setDeliveredTotal(
+          this.homeYard.getCount(homeConfig.defaultSlot),
+        )
+        this.pushOfflineScores()
+        this.onPickupFeedback({
+          type: 'toast',
+          text: '老家被偷了一张！',
+          kind: 'bad',
+        })
+      },
+    })
+    this.offlineEndsAt = Date.now() + MATCH_DURATION_MS
+    this.onMatchClock?.(this.offlineEndsAt, MATCH_WIN_SCORE)
+    this.pushOfflineScores()
+    this.onPickupFeedback({
+      type: 'toast',
+      text: `单机开始 · 你 vs ${Math.min(3, botCount)} 机器人 · 可偷家 / 电网 / 铲球`,
+      kind: 'ok',
+    })
+  }
+
+  isOfflineSolo(): boolean {
+    return this.offlineSolo
+  }
+
+  private pushOfflineScores(): void {
+    if (!this.offlineSolo) return
+    const scores = this.offlineBots.getScores(
+      this.offlineLocalId,
+      this.offlineLocalName,
+      this.cardSystem.getDeliveredTotal(),
+      this.cardSystem.getStack().length,
+    )
+    this.onScores?.(scores)
+  }
+
+  private maybeOfflineUno(playerId: string, name: string, score: number): void {
+    if (!this.offlineSolo || this.offlineEnding) return
+    if (this.offlineUnoAnnounced.has(playerId)) return
+    const remaining = MATCH_WIN_SCORE - score
+    if (remaining <= 0 || remaining > MATCH_UNO_REMAINING) return
+    this.offlineUnoAnnounced.add(playerId)
+    this.onUnoMoment?.({
+      playerId,
+      playerName: name,
+      score,
+      remaining,
+      winScore: MATCH_WIN_SCORE,
+      message: `${name}玩家还差${remaining}张牌！UNO时刻！`,
+    })
+  }
+
+  private checkOfflineWin(): void {
+    if (!this.offlineSolo || this.offlineEnding || !this.matchLive) return
+    const localScore = this.cardSystem.getDeliveredTotal()
+    if (localScore >= MATCH_WIN_SCORE) {
+      this.finishOfflineMatch('score', this.offlineLocalId)
+      return
+    }
+    const botWin = this.offlineBots.anyReached(MATCH_WIN_SCORE)
+    if (botWin) {
+      this.finishOfflineMatch('score', botWin.id)
+      return
+    }
+    if (this.offlineEndsAt > 0 && Date.now() >= this.offlineEndsAt) {
+      this.finishOfflineMatch('timeout', null)
+    }
+  }
+
+  private finishOfflineMatch(
+    reason: 'score' | 'timeout',
+    winnerId: string | null,
+  ): void {
+    if (!this.offlineSolo || this.offlineEnding) return
+    this.offlineEnding = true
+    const scores = this.offlineBots.getScores(
+      this.offlineLocalId,
+      this.offlineLocalName,
+      this.cardSystem.getDeliveredTotal(),
+      this.cardSystem.getStack().length,
+    )
+    let winners = scores.filter((s) => s.id === winnerId)
+    if (reason === 'timeout' || !winners.length) {
+      const best = Math.max(0, ...scores.map((s) => s.score))
+      winners = scores.filter((s) => s.score === best)
+    }
+    const names = winners.map((w) => w.name || w.id).join('、')
+    const message =
+      reason === 'score'
+        ? winners.length > 1
+          ? `率先送达 ${MATCH_WIN_SCORE} 张！并列：${names}`
+          : `${names} 率先送达 ${MATCH_WIN_SCORE} 张，获胜！`
+        : winners.length
+          ? `时间到！${names} 收集最多（${winners[0]!.score} 张）`
+          : '时间到！无人得分'
+
+    this.onMatchClock?.(null, MATCH_WIN_SCORE)
+    this.onMatchEnd?.({
+      reason,
+      winners,
+      scores,
+      winScore: MATCH_WIN_SCORE,
+      message,
+    })
+    this.endOfflineSolo()
+  }
+
+  /** Stop offline solo and reset field for lobby. */
+  private endOfflineSolo(): void {
+    this.offlineBots.clear()
+    this.offlineSolo = false
+    this.matchLive = false
+    this.offlineEndsAt = 0
+    this.offlineEnding = false
+    this.offlineUnoAnnounced.clear()
+    this.remotes.clear()
+    this.applyDummyActive(false)
+    this.onDeath?.(null)
+    this.playerCtrl?.clearDeath()
+    if (this.cardSystem) {
+      this.cardSystem.setOfflineHomeYard(null)
+      this.cardSystem.setInteractBlocked(false)
+      this.cardSystem.enterOfflineMode()
+      this.cardSystem.setHomeIndex(homeConfig.defaultSlot)
+      this.homeYard.clearAllPiles()
+      this.applyOfflineHomeLabels()
+      this.playerCtrl.player.setHeldStack([])
+      this.teleportLocalToHome()
+    }
+    this.onMatchClock?.(null, MATCH_WIN_SCORE)
+    this.onScores?.([])
+  }
+
+  /** Bot slide hit local player: knock + drop backpack + stun. */
+  private applyOfflinePlayerSlideHit(hit: OfflineBotHitPlayer): void {
+    if (!this.offlineSolo || this.playerCtrl.isDead()) return
+    this.dropLocalStackBurst(hit.fromX, hit.fromZ)
+    this.playerCtrl.playKnockback(hit.toX, hit.toZ, hit.durationMs)
+    this.playerCtrl.setStunUntil(Date.now() + STUN_DURATION_MS)
+    this.playerCtrl.player.setStunnedUntil(
+      Date.now() + STUN_DURATION_MS,
+      STUN_DURATION_MS,
+    )
+    this.onPickupFeedback({
+      type: 'toast',
+      text: `被机器人铲中！眩晕 ${(STUN_DURATION_MS / 1000).toFixed(1)}s`,
+      kind: 'bad',
+    })
+    this.pushOfflineScores()
+  }
+
+  private dropLocalStackBurst(x: number, z: number): void {
+    const cards = this.cardSystem.takeAllStack()
+    this.playerCtrl.player.setHeldStack([])
+    if (!cards.length) return
+    const drops = cards.map((card, i) => {
+      const ang = (i / Math.max(1, cards.length)) * Math.PI * 2 + 0.2
+      const rad = 0.75 + (i % 3) * 0.3
+      return {
+        card,
+        x: x + Math.cos(ang) * rad,
+        y: 0.55,
+        z: z + Math.sin(ang) * rad,
+      }
+    })
+    this.cardSystem.spawnDropped(drops, { x, y: 1.0, z })
+  }
+
+  /** Local player steps into active foreign fence. */
+  private electrocuteLocalOffline(fenceSlot: number): void {
+    if (!this.offlineSolo || this.playerCtrl.isDead()) return
+    const pos = this.playerCtrl.getPosition()
+    this.dropLocalStackBurst(pos.x, pos.z)
+    const until = Date.now() + HOME_FENCE_DEATH_MS
+    this.playerCtrl.setDeathUntil(until)
+    this.onDeath?.({ until, durationMs: HOME_FENCE_DEATH_MS })
+    this.onPickupFeedback({
+      type: 'toast',
+      text: `触电！老家电网（角 ${fenceSlot}）· ${HOME_FENCE_DEATH_MS / 1000}s 后重生`,
+      kind: 'bad',
+    })
+    this.pushOfflineScores()
+  }
+
+  private processOfflineLocalRespawn(): void {
+    if (!this.offlineSolo) return
+    if (this.playerCtrl.isDead()) {
+      this.offlineWasDead = true
+      return
+    }
+    if (!this.offlineWasDead) return
+    this.offlineWasDead = false
+    this.playerCtrl.clearDeath()
+    this.onDeath?.(null)
+    this.teleportLocalToHome()
+    this.onPickupFeedback({
+      type: 'toast',
+      text: '已在自家重生',
+      kind: 'ok',
+    })
+  }
 
   /** Wire LAN client (optional). Offline still works without this. */
   attachNet(net: NetClient): void {
@@ -704,6 +990,15 @@ export class Game {
           this.playerCtrl.player.setHeldStack(fb.stack)
         } else if (fb.type === 'deposited') {
           this.playerCtrl.player.setHeldStack([])
+          if (this.offlineSolo) {
+            this.maybeOfflineUno(
+              this.offlineLocalId,
+              this.offlineLocalName,
+              fb.deliveredTotal,
+            )
+            this.pushOfflineScores()
+            this.checkOfflineWin()
+          }
         }
         this.onPickupFeedback(fb)
       },
@@ -776,19 +1071,67 @@ export class Game {
     this.physics.step()
     const pos = this.playerCtrl.getPosition()
     this.cameraFollow.updatePosition(pos, dt)
-    this.cardSystem.update(pos, dt)
+
+    if (this.offlineSolo && this.offlineBots.isActive) {
+      this.processOfflineLocalRespawn()
+      const hi = this.cardSystem.getHomeIndex()
+      const playerSnap = {
+        x: pos.x,
+        z: pos.z,
+        dead: this.playerCtrl.isDead(),
+        stunned: this.playerCtrl.isStunned(),
+        onOwnHome: isInsideHomeSlot(hi, pos.x, pos.z),
+        homeIndex: hi,
+      }
+      const fences = this.offlineBots.computeOwnerFences(playerSnap)
+      this.homeYard.setActiveFences(fences)
+      this.cardSystem.setFencedSlots(fences)
+      this.offlineBots.setFencedSlots(fences)
+
+      // Step into fenced foreign home → death
+      if (!playerSnap.dead) {
+        const slot = this.homeYard.slotAt(pos.x, pos.z)
+        if (
+          slot !== null &&
+          slot !== hi &&
+          fences.includes(slot)
+        ) {
+          this.electrocuteLocalOffline(slot)
+        }
+      }
+
+      this.cardSystem.setInteractBlocked(
+        this.playerCtrl.isDead() || this.playerCtrl.isStunned(),
+      )
+      this.cardSystem.update(pos, dt)
+      this.offlineBots.tick(dt, playerSnap)
+      this.pushOfflineScores()
+      const botScores = this.offlineBots.getScores(
+        this.offlineLocalId,
+        this.offlineLocalName,
+        this.cardSystem.getDeliveredTotal(),
+        this.cardSystem.getStack().length,
+      )
+      for (const s of botScores) {
+        if (s.id.startsWith('offline_bot_')) {
+          this.maybeOfflineUno(s.id, s.name || s.id, s.score)
+        }
+      }
+      this.checkOfflineWin()
+    } else {
+      this.cardSystem.update(pos, dt)
+      // Non-match offline / lobby: only own-home fence visual
+      if (!this.net?.isPlaying && this.homeYard) {
+        const hi = this.cardSystem?.getHomeIndex?.() ?? homeConfig.defaultSlot
+        const onHome = isInsideHomeSlot(hi, pos.x, pos.z)
+        this.homeYard.setActiveFences(onHome ? [hi] : [])
+      }
+    }
     this.remotes.update(dt)
     this.trapSystem?.update(dt)
     this.trainingDummy?.update(dt)
     this.slideCorridor?.update(dt)
     this.homeYard?.update(dt)
-
-    // Offline: fence on when standing on own home platform
-    if (!this.net?.isPlaying && this.homeYard) {
-      const hi = this.cardSystem?.getHomeIndex?.() ?? homeConfig.defaultSlot
-      const onHome = isInsideHomeSlot(hi, pos.x, pos.z)
-      this.homeYard.setActiveFences(onHome ? [hi] : [])
-    }
 
     if (this.net?.isPlaying) {
       this.net.tickPose(dt, {
@@ -836,9 +1179,113 @@ export class Game {
           })
         }
       }
+    } else if (this.offlineSolo) {
+      // Local solo: slide works without WebSocket
+      if (
+        this.input.consumeAttack() &&
+        !this.playerCtrl.isStunned() &&
+        !this.playerCtrl.isDead()
+      ) {
+        const held = this.playerCtrl.player.getHeldItem()
+        if (held) {
+          this.onPickupFeedback({
+            type: 'toast',
+            text: '单机暂无道具攻击，空手左键铲球',
+            kind: 'bad',
+          })
+        } else {
+          this.tryOfflineSlide()
+        }
+      }
     }
 
     void this.renderer.render(this.scene, this.camera)
+  }
+
+  /** Client-side slide tackle vs offline bots (mirrors server trySlide). */
+  private tryOfflineSlide(): void {
+    if (!this.offlineSolo || this.offlineEnding) return
+    const now = Date.now()
+    if (now - this.offlineLastSlideAt < SLIDE_COOLDOWN_MS) {
+      this.onPickupFeedback({
+        type: 'toast',
+        text: '铲球冷却中',
+        kind: 'bad',
+      })
+      return
+    }
+    if (this.playerCtrl.isStunned() || this.playerCtrl.isDead()) return
+
+    const pos = this.playerCtrl.getPosition()
+    const yaw = this.playerCtrl.getYaw()
+    const stackLen = this.cardSystem.getStack().length
+    const fx = Math.sin(yaw)
+    const fz = Math.cos(yaw)
+    const mult = Math.max(
+      SLIDE_DIST_MIN_MULT,
+      1 - SLIDE_DIST_PENALTY_PER_CARD * stackLen,
+    )
+    const dist = SLIDE_BASE_DIST * mult
+    const lim = 17
+    const toX = Math.max(-lim, Math.min(lim, pos.x + fx * dist))
+    const toZ = Math.max(-lim, Math.min(lim, pos.z + fz * dist))
+
+    let bestId: string | null = null
+    let bestT = Infinity
+    for (const b of this.offlineBots.listPoses()) {
+      if (now < b.stunUntil || now < b.deathUntil) continue
+      const hit = pointNearSegment(
+        b.x,
+        b.z,
+        pos.x,
+        pos.z,
+        toX,
+        toZ,
+        SLIDE_HIT_RADIUS,
+      )
+      if (!hit) continue
+      if (hit.t < bestT) {
+        bestT = hit.t
+        bestId = b.id
+      }
+    }
+
+    this.offlineLastSlideAt = now
+    this.playerCtrl.playSlide(toX, toZ, SLIDE_DURATION_MS, SLIDE_RECOVER_MS)
+    this.slideCorridor?.show(
+      pos.x,
+      pos.z,
+      toX,
+      toZ,
+      SLIDE_DURATION_MS + SLIDE_RECOVER_MS,
+    )
+    this.playerCtrl.player.slideRange.setIdlePreview(false)
+    this.onSlideCd?.()
+
+    if (bestId) {
+      const dropped = this.offlineBots.applyHit(
+        bestId,
+        fx,
+        fz,
+        pos.x,
+        pos.z,
+      )
+      this.onPickupFeedback({
+        type: 'toast',
+        text:
+          dropped > 0
+            ? `铲中！打落 ${dropped} 张`
+            : '铲中！（对方背包为空）',
+        kind: 'ok',
+      })
+      this.pushOfflineScores()
+    } else {
+      this.onPickupFeedback({
+        type: 'toast',
+        text: '铲球落空',
+        kind: 'bad',
+      })
+    }
   }
 
   private onResize = (): void => {
@@ -848,4 +1295,29 @@ export class Game {
     this.camera.updateProjectionMatrix()
     this.renderer.setSize(w, h)
   }
+}
+
+/** Point-to-segment hit in XZ (same idea as server GameSim). */
+function pointNearSegment(
+  px: number,
+  pz: number,
+  ax: number,
+  az: number,
+  bx: number,
+  bz: number,
+  radius: number,
+): { t: number } | null {
+  const abx = bx - ax
+  const abz = bz - az
+  const len2 = abx * abx + abz * abz
+  if (len2 < 1e-8) {
+    const d = Math.hypot(px - ax, pz - az)
+    return d <= radius ? { t: 0 } : null
+  }
+  let t = ((px - ax) * abx + (pz - az) * abz) / len2
+  t = Math.max(0, Math.min(1, t))
+  const cx = ax + abx * t
+  const cz = az + abz * t
+  const d = Math.hypot(px - cx, pz - cz)
+  return d <= radius ? { t } : null
 }

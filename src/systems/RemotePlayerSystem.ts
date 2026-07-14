@@ -192,6 +192,23 @@ export class RemotePlayerSystem {
     this.clear()
   }
 
+  /** Offline / explicit spawn (bots). */
+  upsert(id: string, name: string, homeIndex: number): RemotePlayer {
+    this.names.set(id, name)
+    this.homeById.set(id, homeIndex)
+    let remote = this.remotes.get(id)
+    if (!remote) remote = this.add(id, name, homeIndex)
+    return remote
+  }
+
+  pushPoseNow(id: string, x: number, y: number, z: number, yaw: number): void {
+    this.remotes.get(id)?.pushPose(x, y, z, yaw)
+  }
+
+  removeById(id: string): void {
+    this.remove(id)
+  }
+
   private add(id: string, name: string, homeIndex?: number): RemotePlayer {
     const remote = new RemotePlayer(id, name, this.colorSeq++)
     this.remotes.set(id, remote)

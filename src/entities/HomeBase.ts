@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import {
   getHomeSlot,
   homeConfig,
+  isInsideHomeSlot,
   type HomeSlotDef,
 } from '../config/home'
 import {
@@ -424,6 +425,22 @@ export class HomeYard {
 
   popTopFrom(slotIndex: number): UnoCardData | null {
     return this.get(slotIndex).popTop()
+  }
+
+  getTop(slotIndex: number): UnoCardData | null {
+    return this.get(slotIndex).getTopCard()
+  }
+
+  getCount(slotIndex: number): number {
+    return this.get(slotIndex).getDepositedCount()
+  }
+
+  /** Which home platform contains (x,z), or null. */
+  slotAt(x: number, z: number): number | null {
+    for (let i = 0; i < 4; i++) {
+      if (isInsideHomeSlot(i, x, z)) return i
+    }
+    return null
   }
 
   clearAllPiles(): void {

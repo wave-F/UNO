@@ -11,8 +11,10 @@
 - Rapier 物理 + Kinematic Character Controller
 - 场景 **UNO 数字牌**拾取堆叠（`canStackOn`）；运回 **本家角**计分
 - **背牌减速**：每张背包牌 **−5%** 移速，最低 **50%**（`shared/config/movement.ts`）
-- **局域网联机**：多房间、大厅、房主开始、位姿+权威卡牌；可单机
-- **服务器机器人**（测试）：捡牌/卸货/偶发偷家；持棒攻击有 **0.5–1.5s 随机前摇**；可布置 Skip
+- **大厅**：主路径为 **单机游戏**（本地 3 机器人）；**局域对战暂未开启**（联机代码仍保留）
+- **单机完整玩法**（无 WebSocket）：运牌、偷家、电网触电、你铲 / 机器人铲、2 分钟 / 20 张、UNO 时刻（`OfflineBotSystem` + 本地权威）
+- **局域网联机**（代码在，大厅入口暂关）：多房间、房主开始、位姿+权威卡牌、服务端机器人
+- **服务器机器人**（联机）：捡牌/卸货/偶发偷家；持棒攻击有 **0.5–1.5s 随机前摇**；可布置 Skip
 - **手持道具（互斥，仅 1 个）**：
   - **狼牙棒**：场上/手持为棒网格；左键挥击 → 眩晕 1.5s、掉背包顶至多 4 张
   - **Skip 陷阱**：场上为 Skip 牌面；左键布置到脚下（全员可见、无时限）；**他人**踩中眩晕 2s；**自己不踩中**
@@ -26,12 +28,13 @@
 
 | 阶段 | 内容 | 状态 |
 |------|------|------|
-| 单机玩法 | 移动、捡牌、卸货 | ✅ |
-| 联机 Phase 1–4 | 房间/移动/权威卡牌/多房间 | ✅ |
+| 单机玩法 | 移动、捡牌、卸货、3 Bot、偷家/电网/铲球 | ✅ |
+| 联机 Phase 1–4 | 房间/移动/权威卡牌/多房间 | ✅（大厅入口暂关） |
 | 联机 Phase 5 | 机器人 + 眩晕战斗 + 木头人 | ✅ |
 | 联机 Phase 6 | 回合计时 + 20 张胜负 | ✅ |
 | 联机 Phase 7 | 老家电网 + 死亡/重生 | ✅ |
-| 后续 | 静态托管、胜负 UI 等 | ⏳ |
+| 发布 | 静态 ZIP 托管单机 | ✅ |
+| 后续 | 重开局域对战入口、道具刷场等 | ⏳ |
 
 工作区：`/Users/fengbotao/游戏设计/Uno`  
 包名：`uno-guys`
@@ -104,7 +107,7 @@ Uno/
 | `shared/config/dummy.ts` | 木头人 id / 高度 / 补牌张数 |
 | `shared/config/match.ts` | 时长、`MATCH_WIN_SCORE`、`MATCH_UNO_REMAINING` |
 | `shared/uno/types.ts` | 牌型、`isStunBat` / `isSkipTrap` / `isHandItem`、眩晕与陷阱常量 |
-| `shared/uno/deck.ts` | 刷牌；`stunFraction` / `skipFraction`；均为 0 时纯数字 |
+| `shared/uno/deck.ts` | 刷牌；默认 `stunFraction`/`skipFraction` **均为 0**（场上不刷棒/Skip） |
 | `server/GameSim.ts` | 场上牌、背包、道具、攻击、Skip 陷阱、**老家电网/死亡/重生**、木头人开关（`setTrainingDummyActive`） |
 | `server/Bot.ts` | 机器人寻路、延迟挥棒、近敌布置 Skip；**避开有电网的家** |
 | `server/Room.ts` | 房间 tick、位姿、死亡锁定 pose、重生 snap；`uno_moment`；木头人 pose 仅 active 时注入 |
@@ -114,6 +117,8 @@ Uno/
 | `src/systems/SkipTrapSystem.ts` | 客户端陷阱增删/动画 |
 | `src/entities/TrainingDummy.ts` | 中央木头人 + 受击/眩晕表现（仅服务器 active 时挂场景） |
 | `src/systems/RemotePlayerSystem.ts` | 远端/机器人插值；创建时按 home 落角，避免站中心 |
+| `src/systems/OfflineBotSystem.ts` | 单机 Bot：捡牌/偷家/铲人/触电重生 |
+| `src/ui/LobbyPanel.ts` | 大厅：单机 / 局域对战（暂关） |
 | `src/entities/AttackRangeVisual.ts` | 身前攻击扇形（仅狼牙棒） |
 | `src/entities/StunFx.ts` | 头顶眩晕星星 |
 | `src/entities/Player.ts` | 本地/远端豆人 + 手持棒/Skip 牌 + 背牌 |
@@ -141,11 +146,12 @@ npm run build     # tsc + vite build
 
 - 功能道具为**无色牌**，不按 UNO 顺序；占**唯一**手持槽 `item`（狼牙棒与 Skip **互斥**），不进背包  
 - **狼牙棒**：场上/手持为棒网格；左键扇形最近目标；命中 → 眩晕 **1.5s**、掉背包顶 `min(4, 张数)`、消耗自己的棒  
-- **Skip 陷阱**：场上刷更多（`skipFraction` 默认约 0.32）；左键在脚下布置（`trap_placed`）；**无存在时限**、**全员可见**；**放置者不会踩中**；他人踩入 `SKIP_TRAP_RADIUS` → 眩晕 **2s**，陷阱移除（`trap_removed` / `trap_triggered`）  
+- **Skip 陷阱**：左键在脚下布置（`trap_placed`）；**无存在时限**、**全员可见**；**放置者不会踩中**；他人踩入 `SKIP_TRAP_RADIUS` → 眩晕 **2s**，陷阱移除（`trap_removed` / `trap_triggered`）  
+- **场上刷牌**：默认**不生成**狼牙棒 / Skip（`DEFAULT_STUN_FRACTION = 0`、`DEFAULT_SKIP_FRACTION = 0`）；调试面板仍可 `debug_give_item` 手动加  
 - **G 丢弃**：`discard_item` + yaw → 手持道具以 `stun_drop` 爆牌飞到身前约 1.35m，可再捡；眩晕中不可丢  
 - **不掉对方手持道具**；被眩晕时 **tick / interact 均禁止** 捡牌、卸货、偷家  
 - 爆落牌 `source: stun_drop`；木头人补牌 / 重连 welcome 会清理残留爆落；重连 `welcome.traps` 同步陷阱  
-- 机器人：棒在范围内 0.5–1.5s 前摇再挥；持 Skip 时近敌会布置，冷却约 0.8–1.4s  
+- 机器人：持棒时会挥；持 Skip 时近敌会布置（需先手动给到道具）  
 
 ### 老家电网与死亡
 
@@ -155,7 +161,15 @@ npm run build     # tsc + vite build
 - **惩罚**：背包 + 手持道具**全部掉落**（`stun_drop`）；不可移动/交互；本地全屏遮罩倒计时  
 - **重生**：`HOME_FENCE_DEATH_MS`（默认 5s）后 `player_respawned`，传送到**自己**老家 spawn  
 - **偷家**：有电网时权威端禁止从该家偷牌（先电死后无法 interact）  
-- **单机**：本地站在自己老家同样显示电网（无其他玩家时无触电对象）  
+- **单机**：你与 Bot 站自家 → 电网亮；踩有电的别人家 → 掉光背包、5s 遮罩后自家重生  
+
+## 单机（静态页 / ZIP）
+
+- 大厅仅 **单机游戏** + 灰显 **局域对战（暂未开启）**  
+- `Game.startOfflineSolo`：本地刷牌 + `OfflineBotSystem`（3 Bot）  
+- 偷家 / 电网 / 铲球均在客户端模拟；HTTPS 页无需 `ws://`  
+- 场上默认不刷狼牙棒/Skip（`DEFAULT_*_FRACTION = 0`）  
+- 构建产物：`npm run build` → `dist/`；发布包勿提交 zip（本地 `uno-guys-web-static.zip`）  
 
 ## 回合胜负
 

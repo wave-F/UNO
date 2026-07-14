@@ -629,6 +629,10 @@ canvas {
   margin: 8px 0;
 }
 
+.lobby-actions-stack {
+  flex-direction: column;
+}
+
 .lobby-actions button {
   flex: 1;
   padding: 7px 10px;
@@ -654,6 +658,29 @@ canvas {
   background: #f59e0b;
   color: #422006;
   flex: 1 1 100%;
+}
+
+.lobby-actions button.lobby-solo {
+  flex: 1 1 100%;
+  padding: 14px 16px;
+  font-size: 16px;
+  background: linear-gradient(100deg, #4ade80, #22c55e);
+  color: #052e16;
+}
+
+.lobby-actions button.lobby-solo:hover {
+  filter: brightness(1.06);
+}
+
+.lobby-actions button.lobby-lan {
+  flex: 1 1 100%;
+  padding: 12px 14px;
+  background: rgba(100, 116, 139, 0.45);
+  color: #cbd5e1;
+}
+
+.lobby-card-simple .lobby-hint {
+  margin-bottom: 10px;
 }
 
 .lobby-quick-hint {

@@ -8,9 +8,9 @@ import {
 const COLORS: UnoColor[] = ['red', 'yellow', 'green', 'blue']
 const NUMBERS: UnoRank[] = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']
 
-/** Default field mix: mace disabled for now; skip occasional. */
+/** Default field mix: pure numbers (mace / Skip not auto-spawned). */
 export const DEFAULT_STUN_FRACTION = 0
-export const DEFAULT_SKIP_FRACTION = 0.08
+export const DEFAULT_SKIP_FRACTION = 0
 
 let idSeq = 0
 
@@ -60,8 +60,8 @@ function randomSkip(_rng: () => number): UnoCardData {
 
 /**
  * Field spawn mix.
- * Default ~8% stun + ~8% skip (no forced minimums); rest numbers.
- * Pass stunFraction:0 and skipFraction:0 for pure numbers (e.g. training dummy).
+ * Default: numbers only (DEFAULT_STUN/SKIP_FRACTION = 0).
+ * Pass fractions > 0 to re-enable mace / Skip on field, or use debug_give_item.
  */
 export function createRandomCards(
   count: number,

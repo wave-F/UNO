@@ -355,19 +355,24 @@ export class NetClient {
     this.disconnectSoft()
     this.setStatus('connecting')
 
-    let url = wsUrl.trim()
+    let url = normalizeWsUrl(wsUrl)
     if (!url) {
       this.setStatus('error', 'WebSocket 地址为空')
       return
     }
-    if (url.startsWith('http://')) url = 'ws://' + url.slice('http://'.length)
-    if (url.startsWith('https://')) url = 'wss://' + url.slice('https://'.length)
-    url = url.replace(/\/$/, '')
 
     try {
       this.ws = new WebSocket(url)
     } catch (e) {
-      this.setStatus('error', String(e))
+      const msg = e instanceof Error ? e.message : String(e)
+      if (/insecure WebSocket|SecurityError/i.test(msg) || msg.includes('HTTPS')) {
+        this.setStatus(
+          'error',
+          'HTTPS 页面不能使用 ws://。请点「单机游玩」，或部署带 TLS 的 wss:// 联机服',
+        )
+      } else {
+        this.setStatus('error', msg)
+      }
       return
     }
 
@@ -396,7 +401,13 @@ export class NetClient {
     })
 
     this.ws.addEventListener('error', () => {
-      this.setStatus('error', 'WebSocket 连接失败（检查 server 是否启动）')
+      const onHttps = typeof window !== 'undefined' && window.location.protocol === 'https:'
+      this.setStatus(
+        'error',
+        onHttps
+          ? '联机连接失败。静态 HTTPS 站默认无 wss 服：请用「单机游玩」，或配置可达的 wss:// 地址'
+          : 'WebSocket 连接失败（检查本机是否 npm run server）',
+      )
     })
   }
 
@@ -720,7 +731,30 @@ export class NetClient {
   }
 }
 
+/**
+ * Prefer same security as the page: HTTPS → wss, HTTP → ws.
+ * Browser blocks ws:// from HTTPS pages (mixed content / SecurityError).
+ */
 export function defaultWsUrl(port = 8787): string {
   const host = window.location.hostname || '127.0.0.1'
-  return `ws://${host}:${port}`
+  const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws'
+  return `${scheme}://${host}:${port}`
+}
+
+/** Normalize http(s) → ws(s); force wss when the page itself is HTTPS. */
+export function normalizeWsUrl(raw: string): string {
+  let url = raw.trim()
+  if (!url) return url
+  if (url.startsWith('http://')) url = 'ws://' + url.slice('http://'.length)
+  if (url.startsWith('https://')) url = 'wss://' + url.slice('https://'.length)
+  url = url.replace(/\/$/, '')
+  // HTTPS document cannot open insecure WebSocket
+  if (
+    typeof window !== 'undefined' &&
+    window.location.protocol === 'https:' &&
+    url.startsWith('ws://')
+  ) {
+    url = 'wss://' + url.slice('ws://'.length)
+  }
+  return url
 }

@@ -1,6 +1,6 @@
 /** World card spawn / density (client + server). */
 export const cardSpawnConfig = {
-  /** Cards on field when match starts (mostly numbers; items at normal rates). */
+  /** Cards on field when match starts (numbers only; no auto mace/Skip). */
   initialCount: 10,
   maxOnField: 18,
   /** Seconds between spawn waves. */
